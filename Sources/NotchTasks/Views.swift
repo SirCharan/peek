@@ -13,9 +13,14 @@ enum Layout {
     }
 
     /// Panel size + horizontal offset from screen centre. Panel always matches content so it never blocks clicks.
-    static func rect(expanded: Bool, g: Geo, jobs: [Job]) -> (size: CGSize, dx: CGFloat) {
+    static func collapsedW(_ alert: String?, _ g: Geo) -> CGFloat {
+        guard let a = alert else { return g.notchW + 80 }
+        return min(g.notchW + 220, max(g.notchW + 80, CGFloat(a.count) * 7.5 + 40))
+    }
+
+    static func rect(expanded: Bool, g: Geo, jobs: [Job], alert: String?) -> (size: CGSize, dx: CGFloat) {
         if expanded { return (CGSize(width: cardW, height: cardH(jobs, g)), 0) }
-        return (CGSize(width: g.notchW + 80, height: g.notchH + 24), 0)
+        return (CGSize(width: collapsedW(alert, g), height: g.notchH + 24), 0)
     }
 }
 
@@ -73,15 +78,15 @@ struct Card: View {
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: geo.notchH + 6)
-            if store.jobs.isEmpty {
+            if store.shown.isEmpty {
                 Text("No Claude tasks running").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
                     .frame(height: Layout.emptyH)
             }
-            ForEach(store.jobs.prefix(5)) { RowView(job: $0) }
+            ForEach(store.shown.prefix(5)) { RowView(job: $0) }
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
-        .frame(width: Layout.cardW, height: Layout.cardH(store.jobs, geo), alignment: .top)
+        .frame(width: Layout.cardW, height: Layout.cardH(store.shown, geo), alignment: .top)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 20, bottomTrailingRadius: 20).fill(.black))
     }
 }
@@ -90,11 +95,12 @@ struct Root: View {
     let store: Store
     let geo: Geo
     @Namespace private var ns
+    @State private var pulse = false
     private let spring = Animation.spring(duration: 0.35, bounce: 0.25)
 
     var body: some View {
         ZStack(alignment: .top) {
-            if store.expanded {
+            if store.open {
                 Card(store: store, geo: geo)
                     .matchedGeometryEffect(id: 1, in: ns)
             } else {
@@ -103,21 +109,30 @@ struct Root: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        .onHover { store.expanded = $0 }
-        .animation(spring, value: store.expanded)
+        .onHover { store.expanded = $0; store.syncOpen() }
+        .animation(spring, value: store.open)
         .ignoresSafeArea()
     }
 
     private var collapsed: some View {
-        VStack(spacing: 0) {
+        let al = store.alert
+        let bg: Color = al.map { $0.kind == "needs" ? .orange : $0.kind == "done" ? .green : .red } ?? .black
+        return VStack(spacing: 0) {
             Color.clear.frame(height: geo.notchH)
             HStack(spacing: 6) {
-                Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
-                Text(store.summary).font(.system(size: 11, weight: .medium)).monospacedDigit()
+                if let al {
+                    Text(al.text).font(.system(size: 11, weight: .bold)).lineLimit(1)
+                } else {
+                    Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
+                    Text(store.summary).font(.system(size: 11, weight: .medium)).monospacedDigit()
+                }
             }
-            .foregroundStyle(.white).frame(height: 24)
+            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 24)
         }
-        .frame(width: geo.notchW + 80, height: geo.notchH + 24)
-        .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(.black))
+        .frame(width: Layout.collapsedW(al?.text, geo), height: geo.notchH + 24)
+        .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(bg)
+            .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
+            .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse))
+        .onAppear { pulse = true }
     }
 }

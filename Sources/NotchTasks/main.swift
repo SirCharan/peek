@@ -59,11 +59,11 @@ final class NotchPanel: NSPanel {
     }
 
     func reframe() {
-        let r = Layout.rect(expanded: store.expanded, g: geo, jobs: store.jobs)
+        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, alert: store.alert?.text)
         let f = NSRect(x: screen.frame.midX + r.dx - r.size.width / 2, y: screen.frame.maxY - r.size.height,
                        width: r.size.width, height: r.size.height)
         collapseTask?.cancel()
-        if !store.expanded && f.height < panel.frame.height {
+        if !store.open && f.height < panel.frame.height {
             // ponytail: shrink after the spring so content isn't clipped mid-animation
             collapseTask = Task {
                 try? await Task.sleep(for: .milliseconds(450))
@@ -76,7 +76,7 @@ final class NotchPanel: NSPanel {
 
     func track() {
         withObservationTracking {
-            _ = store.expanded; _ = store.jobs
+            _ = store.open; _ = store.expanded; _ = store.jobs; _ = store.alert
         } onChange: {
             Task { @MainActor in self.reframe(); self.track() }
         }
