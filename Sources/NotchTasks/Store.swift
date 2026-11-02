@@ -1,0 +1,160 @@
+import Foundation
+import Observation
+
+struct Job: Identifiable, Equatable, Sendable {
+    let id: String
+    var title: String
+    var state: String
+    var phase: String
+    var pct: Int
+    var eta: Int?
+    var ask: String
+    var elapsed: Int
+    var project = ""
+    var doing = ""
+    var agents = 0
+    var stuck: Int?
+}
+
+// ponytail: tolerant text field — any non-string value decodes to nil instead of failing the file
+private struct Txt: Decodable {
+    let s: String?
+    init(from d: Decoder) throws { s = try? d.singleValueContainer().decode(String.self) }
+}
+private struct Fan: Decodable { let kind: String?; let label: String?; let startedAt: Double? }
+private struct JobFile: Decodable {
+    let state: String, name: String, createdAt: String, updatedAt: String
+    let detail: Txt?, needs: Txt?, intent: Txt?
+    let cwd: String?
+    let fan: [Fan]?
+}
+private struct SessionFile: Decodable {
+    let pid: Int?, status: String?, kind: String?, name: String?, jobId: String?, spare: Bool?, startedAt: Double?, cwd: String?, sessionId: String?
+}
+
+@MainActor @Observable final class Store {
+    var jobs: [Job] = []
+    var expanded = false
+
+    @ObservationIgnored private var cache: [String: (Date, JobFile?)] = [:]
+    @ObservationIgnored private var history: [String: Double] = [:]
+    @ObservationIgnored private var historyAt = Date.distantPast
+    @ObservationIgnored private var firstMsg: [String: String] = [:]
+    @ObservationIgnored private var lastState: [String: String] = [:]
+    @ObservationIgnored private var seeded = false
+
+    var running: Int { jobs.filter { $0.state == "working" || $0.state == "blocked" }.count }
+    var dotKind: String {
+        if jobs.contains(where: { $0.state == "blocked" }) { return "blocked" }
+        if jobs.contains(where: { $0.state == "failed" }) { return "failed" }
+        return running > 0 ? "working" : "idle"
+    }
+    var summary: String {
+        let b = jobs.filter { $0.state == "blocked" }.count, w = jobs.filter { $0.state == "working" }.count
+        var p: [String] = []
+        if b > 0 { p.append("\(b) needs you") }
+        if w > 0 { p.append("\(w) running") }
+        return p.isEmpty ? "idle" : p.joined(separator: " · ")
+    }
+
+    // ponytail: osascript, not UNUserNotificationCenter — that crashes from a bare SwiftPM binary (no bundle)
+    private func banner(_ title: String, _ body: String) {
+        func esc(_ s: String) -> String { s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
+        let script = "display notification \"\(esc(body))\" with title \"\(esc(title))\""
+        Task.detached {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e", script]
+            try? p.run()
+            p.waitUntilExit()
+        }
+    }
+
+    init() {
+        refresh()
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated { self.refresh() }
+        }
+    }
+
+    private func load(_ path: String) -> JobFile? {
+        guard let m = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+        if let c = cache[path], c.0 == m { return c.1 }
+        let f = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(JobFile.self, from: $0) }
+        cache[path] = (m, f)
+        return f
+    }
+
+    func refresh() {
+        let now = Date()
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+
+        if now.timeIntervalSince(historyAt) > 60 {
+            historyAt = now
+            Task.detached {
+                let h = Eta.scanHistory()
+                await MainActor.run { self.history = h }
+            }
+        }
+
+        var rows: [Job] = []
+        var rowIDs = Set<String>(), known = Set<String>()
+        let jd = home + "/.claude/jobs"
+        for d in (try? fm.contentsOfDirectory(atPath: jd)) ?? [] {
+            guard let f = load("\(jd)/\(d)/state.json"),
+                  let created = Eta.iso(f.createdAt), let updated = Eta.iso(f.updatedAt) else { continue }
+            known.insert(d)
+            let age = now.timeIntervalSince(updated)
+            let show = (f.state == "working" && age < 900) || (f.state == "blocked" && age < 7200)
+                || ((f.state == "done" || f.state == "failed") && age < 60)
+            guard show else { continue }
+            let live = f.state == "working" || f.state == "blocked"
+            let elapsed = max(0, (live ? now : updated).timeIntervalSince(created) / 60)
+            let detail = f.detail?.s ?? ""
+            let newest = (f.fan ?? []).max { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }?.label ?? ""
+            let text = detail.isEmpty ? newest : detail
+            let phase = Eta.phase(state: f.state, text: text)
+            var eta: Int?
+            if live { eta = Eta.progress(detail, elapsedMin: elapsed) ?? Eta.historyEta(name: f.name, elapsedMin: elapsed, hist: history) }
+            rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: f.state, phase: phase,
+                            pct: Eta.pct(phase: phase, detail: detail), eta: eta,
+                            ask: f.state == "blocked" ? Eta.clean(f.needs?.s ?? "", 8) : "", elapsed: Int(elapsed),
+                            project: Eta.base(f.cwd), doing: Eta.clean(text),
+                            agents: (f.fan ?? []).filter { $0.kind == "agent" }.count,
+                            stuck: f.state == "working" && age > 120 ? Int(age / 60) : nil))
+            rowIDs.insert(d)
+        }
+
+        let sd = home + "/.claude/sessions"
+        for n in (try? fm.contentsOfDirectory(atPath: sd)) ?? [] where n.hasSuffix(".json") {
+            guard let data = fm.contents(atPath: "\(sd)/\(n)"),
+                  let s = try? JSONDecoder().decode(SessionFile.self, from: data),
+                  s.spare != true, s.status == "busy", let pid = s.pid, kill(Int32(pid), 0) == 0 else { continue }
+            if let j = s.jobId {
+                if rowIDs.contains(j) { continue }
+                if s.kind == "bg" && known.contains(j) { continue }
+            }
+            let el = s.startedAt.map { max(0, now.timeIntervalSince1970 - $0 / 1000) / 60 } ?? 0
+            let cwd = s.cwd ?? ""
+            var msg = ""
+            if let sid = s.sessionId, Eta.hashLike(s.name ?? "") {
+                if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
+            }
+            rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: "working", phase: "working",
+                            pct: 50, eta: nil, ask: "", elapsed: Int(el), project: Eta.base(cwd)))
+        }
+
+        func w(_ j: Job) -> Int { j.state == "blocked" ? 0 : j.state == "working" ? 1 : 2 }
+        rows.sort { (w($0), $0.id) < (w($1), $1.id) }
+        for j in rows where lastState[j.id] != j.state {
+            if seeded {
+                if j.state == "done" || j.state == "failed" { banner("\(j.title) \(j.state == "done" ? "finished" : "failed")", j.phase) }
+                else if j.state == "blocked" { banner("\(j.title) needs you", j.ask) }
+            }
+            lastState[j.id] = j.state
+        }
+        seeded = true
+        if rows != jobs { jobs = rows }
+    }
+}
