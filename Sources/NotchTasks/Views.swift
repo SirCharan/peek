@@ -16,7 +16,7 @@ enum Layout {
     static func collapsedW(_ alert: String?, jobs: Int, _ g: Geo) -> CGFloat {
         guard let a = alert else {
             let n = min(jobs, 4)
-            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 40 + CGFloat(n - 1) * 10 + (jobs > 4 ? 26 : 0)
+            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 34 + CGFloat(n - 1) * 12 + (jobs > 4 ? 26 : 0)
             return max(g.notchW + 80, content + 32)
         }
         return min(g.notchW + 220, max(g.notchW + 80, CGFloat(a.count) * 7.5 + 40))
@@ -24,7 +24,7 @@ enum Layout {
 
     static func rect(expanded: Bool, g: Geo, jobs: [Job], alert: String?) -> (size: CGSize, dx: CGFloat) {
         if expanded { return (CGSize(width: cardW, height: cardH(jobs, g)), 0) }
-        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 24), 0)
+        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 32), 0)
     }
 }
 
@@ -76,19 +76,54 @@ struct RowView: View {
     }
 }
 
+func stableHash(_ s: String) -> UInt32 {
+    var h: UInt32 = 2166136261
+    for b in s.utf8 { h = (h ^ UInt32(b)) &* 16777619 }
+    return h
+}
+
+func ringHue(_ j: Job) -> Color {
+    switch j.state {
+    case "blocked": return .orange
+    case "failed": return .red
+    case "done": return .green
+    default:
+        if j.stuck != nil { return Color(hue: 0.08, saturation: 0.6, brightness: 1) }
+        return Color(hue: Double(stableHash(j.title) % 360) / 360, saturation: 0.75, brightness: 0.95)
+    }
+}
+
+struct RingView: View {
+    let job: Job
+    @State private var spin = false
+    var body: some View {
+        let hue = ringHue(job)
+        let full = job.state == "done" || job.state == "failed"
+        let pct = full ? 1 : min(max(Double(job.pct) / 100, 0.04), 1)
+        let spins = job.state == "working" && job.stuck == nil
+        ZStack {
+            Circle().stroke(hue.opacity(0.25), lineWidth: 4)
+            Circle().trim(from: 0, to: pct)
+                .stroke(hue, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .rotationEffect(.degrees(spins && spin ? 360 : 0))
+                .animation(spins ? .linear(duration: 6).repeatForever(autoreverses: false) : nil, value: spin)
+        }
+        .frame(width: 22, height: 22)
+        .shadow(color: hue.opacity(0.6), radius: 4)
+        .onAppear { spin = true }
+    }
+}
+
 struct MiniBar: View {
     let job: Job
     var body: some View {
-        let fill: Color = job.state == "done" ? .green : job.state == "failed" ? .red
-            : job.stuck != nil ? .orange : .white.opacity(0.85)
-        let frac = job.state == "done" || job.state == "failed" ? 1 : CGFloat(job.pct) / 100
         let t = job.title.count > 10 ? String(job.title.prefix(9)) + "…" : job.title
-        VStack(spacing: 2) {
-            Text(t).font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+        VStack(spacing: 3) {
+            RingView(job: job)
+            Text(t).font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.8))
                 .lineLimit(1).minimumScaleFactor(0.7)
-            Capsule().fill(.white.opacity(0.2)).frame(width: 40, height: 4)
-                .overlay(alignment: .leading) { Capsule().fill(fill).frame(width: 40 * frac, height: 4) }
-        }.frame(width: 40)
+        }.frame(width: 34)
     }
 }
 
@@ -146,7 +181,7 @@ struct Root: View {
                     Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
                     Text("idle").font(.system(size: 11, weight: .medium))
                 } else {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         ForEach(store.jobs.prefix(4)) { MiniBar(job: $0) }
                         if store.jobs.count > 4 {
                             Text("+\(store.jobs.count - 4)").font(.system(size: 10)).foregroundStyle(.gray)
@@ -154,12 +189,21 @@ struct Root: View {
                     }
                 }
             }
-            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 24)
+            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 32)
         }
-        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 24)
-        .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(bg)
-            .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
-            .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse))
+        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 32)
+        .background {
+            let shape = UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14)
+            ZStack {
+                shape.fill(bg)
+                    .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
+                    .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse)
+                if al == nil, let first = store.jobs.first {
+                    RadialGradient(colors: [ringHue(first).opacity(0.25), .clear], center: .center, startRadius: 0, endRadius: 60)
+                        .blur(radius: 10).allowsHitTesting(false)
+                }
+            }.clipShape(shape)
+        }
         .onAppear { pulse = true }
     }
 }
