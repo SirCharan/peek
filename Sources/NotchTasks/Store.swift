@@ -8,13 +8,11 @@ struct Job: Identifiable, Equatable, Sendable {
     var state: String
     var phase: String
     var pct: Int
-    var eta: Int?
     var ask: String
-    var elapsed: Int
     var project = ""
     var doing = ""
     var agents = 0
-    var stuck: Int?
+    var stuck = false
 }
 
 // ponytail: tolerant text field — any non-string value decodes to nil instead of failing the file
@@ -44,8 +42,7 @@ private struct SessionFile: Decodable {
     func syncOpen() { let o = expanded || Date() < popUntil; if o != open { open = o } }
 
     @ObservationIgnored private var cache: [String: (Date, JobFile?)] = [:]
-    @ObservationIgnored private var history: [String: Double] = [:]
-    @ObservationIgnored private var historyAt = Date.distantPast
+    @ObservationIgnored private let haiku = HaikuCache()
     @ObservationIgnored private var firstMsg: [String: String] = [:]
     @ObservationIgnored private var lastState: [String: String] = [:]
     @ObservationIgnored private var seeded = false
@@ -84,39 +81,40 @@ private struct SessionFile: Decodable {
         let fm = FileManager.default
         let home = NSHomeDirectory()
 
-        if now.timeIntervalSince(historyAt) > 60 {
-            historyAt = now
-            Task.detached {
-                let h = Eta.scanHistory()
-                await MainActor.run { self.history = h }
-            }
-        }
-
         var rows: [Job] = []
         var rowIDs = Set<String>(), known = Set<String>()
         let jd = home + "/.claude/jobs"
         for d in (try? fm.contentsOfDirectory(atPath: jd)) ?? [] {
             guard let f = load("\(jd)/\(d)/state.json"),
-                  let created = Eta.iso(f.createdAt), let updated = Eta.iso(f.updatedAt) else { continue }
+                  let updated = Eta.iso(f.updatedAt) else { continue }
             known.insert(d)
             let age = now.timeIntervalSince(updated)
             let show = (f.state == "working" && age < 900) || (f.state == "blocked" && age < 7200)
                 || ((f.state == "done" || f.state == "failed") && age < 60)
             guard show else { continue }
-            let live = f.state == "working" || f.state == "blocked"
-            let elapsed = max(0, (live ? now : updated).timeIntervalSince(created) / 60)
             let detail = f.detail?.s ?? ""
             let newest = (f.fan ?? []).max { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }?.label ?? ""
             let text = detail.isEmpty ? newest : detail
             let phase = Eta.phase(state: f.state, text: text)
-            var eta: Int?
-            if live { eta = Eta.progress(detail, elapsedMin: elapsed) ?? Eta.historyEta(name: f.name, elapsedMin: elapsed, hist: history) }
+                    let needs = f.needs?.s ?? ""
+            var doing = Eta.clean(text), ask = ""
+            if f.state == "working", !text.isEmpty {
+                let src = String(text.prefix(300))
+                haiku.request(id: d, key: src, prompt: "A coding task reports: \"\(src)\". Rewrite as one plain phrase under 8 words for a non-technical status board, present tense, no file names, paths, commands or code. Reply with the phrase only.")
+                doing = haiku.get(d, src) ?? doing
+            } else if f.state == "blocked" {
+                let src = String(needs.prefix(300))
+                ask = Eta.clean(needs, 8)
+                if !src.isEmpty {
+                    haiku.request(id: d, key: src, prompt: "A coding task is waiting on its user and says it needs: \"\(src)\". Rewrite as one plain question under 8 words. Reply with the question only.")
+                    ask = haiku.get(d, src) ?? ask
+                }
+            }
             rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: f.state, phase: phase,
-                            pct: Eta.pct(phase: phase, detail: detail), eta: eta,
-                            ask: f.state == "blocked" ? Eta.clean(f.needs?.s ?? "", 8) : "", elapsed: Int(elapsed),
-                            project: Eta.base(f.cwd), doing: Eta.clean(text),
+                            pct: Eta.pct(phase: phase, detail: detail),
+                            ask: ask, project: Eta.base(f.cwd), doing: doing,
                             agents: (f.fan ?? []).filter { $0.kind == "agent" }.count,
-                            stuck: f.state == "working" && age > 120 ? Int(age / 60) : nil))
+                            stuck: f.state == "working" && age > 120))
             rowIDs.insert(d)
         }
 
@@ -129,14 +127,13 @@ private struct SessionFile: Decodable {
                 if rowIDs.contains(j) { continue }
                 if s.kind == "bg" && known.contains(j) { continue }
             }
-            let el = s.startedAt.map { max(0, now.timeIntervalSince1970 - $0 / 1000) / 60 } ?? 0
             let cwd = s.cwd ?? ""
             var msg = ""
             if let sid = s.sessionId, Eta.hashLike(s.name ?? "") {
                 if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
             }
             rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: "working", phase: "working",
-                            pct: 50, eta: nil, ask: "", elapsed: Int(el), project: Eta.base(cwd)))
+                            pct: 50, ask: "", project: Eta.base(cwd)))
         }
 
         func w(_ j: Job) -> Int { j.state == "blocked" ? 0 : j.state == "working" ? 1 : 2 }

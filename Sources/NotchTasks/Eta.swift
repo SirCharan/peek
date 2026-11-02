@@ -1,8 +1,5 @@
 import Foundation
 
-private struct TL: Decodable { let at: String?; let state: String?; let text: String? }
-private struct StateLite: Decodable { let state: String?; let name: String?; let createdAt: String? }
-
 enum Eta {
     // ponytail: one formatter, not Sendable-annotated; only used read-only
     nonisolated(unsafe) private static let isoFrac: ISO8601DateFormatter = {
@@ -12,9 +9,6 @@ enum Eta {
 
     static func iso(_ s: String) -> Date? { isoFrac.date(from: s) ?? isoPlain.date(from: s) }
 
-    /// "4m" / "1h12m"
-    static func fmt(_ min: Int) -> String { min >= 60 ? "\(min / 60)h\(min % 60)m" : "\(min)m" }
-
     /// Regex step parse: "step 2/5", "phase 2 of 5", then bare "2/5".
     static func step(_ detail: String) -> (Int, Int)? {
         var nm: (Int, Int)?
@@ -23,11 +17,6 @@ enum Eta {
         else if let m = detail.firstMatch(of: /(\d+)\/(\d+)/), let n = Int(m.1), let t = Int(m.2) { nm = (n, t) }
         guard let (n, t) = nm, n > 0, n <= t, t <= 99 else { return nil }
         return (n, t)
-    }
-
-    /// ETA = elapsed * (M-N)/N
-    static func progress(_ detail: String, elapsedMin: Double) -> Int? {
-        step(detail).map { Int(elapsedMin * Double($1 - $0) / Double($0)) }
     }
 
     static func hashLike(_ s: String) -> Bool { s.isEmpty || s.wholeMatch(of: /[0-9a-f]{8}/) != nil }
@@ -81,29 +70,54 @@ enum Eta {
         }
         return ""
     }
+}
 
-    static func key(_ name: String) -> String { name.split(separator: " ").first.map { $0.lowercased() } ?? name }
+/// ponytail: blocking; call from Task.detached. Output assumed to be a JSON ARRAY of messages; we take the "result" element.
+func runHaiku(_ prompt: String) -> String? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/Users/ck/.local/bin/claude")
+    p.arguments = ["-p", "--model", "haiku", "--output-format", "json", "--strict-mcp-config", "--no-session-persistence",
+                   "--disable-slash-commands", "--setting-sources", "", "--tools", ""]
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/Users/ck/.local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+    if env["HOME"] == nil { env["HOME"] = NSHomeDirectory() }
+    p.environment = env
+    p.currentDirectoryURL = URL(fileURLWithPath: "/tmp")
+    let inP = Pipe(), outP = Pipe()
+    p.standardInput = inP; p.standardOutput = outP; p.standardError = FileHandle.nullDevice
+    var phrase: String?
+    defer { fputs("haiku: \(phrase ?? "nil")\n", stderr) }
+    do { try p.run() } catch { return nil }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 30) { if p.isRunning { p.terminate() } }
+    try? inP.fileHandleForWriting.write(contentsOf: Data(prompt.utf8))
+    try? inP.fileHandleForWriting.close()
+    let data = outP.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    // ponytail: this CLI version emits a single object; older ones an array of messages — accept both
+    let j = try? JSONSerialization.jsonObject(with: data)
+    let obj = (j as? [String: Any]) ?? (j as? [[String: Any]])?.first(where: { $0["type"] as? String == "result" })
+    guard let r = obj?["result"] as? String else { return nil }
+    let t = r.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !t.isEmpty, t.count <= 80, !t.hasPrefix("Failed"), !t.hasPrefix("Not logged") else { return nil }
+    phrase = t
+    return t
+}
 
-    static func historyEta(name: String, elapsedMin: Double, hist: [String: Double]) -> Int? {
-        hist[key(name)].map { Int(max(0, $0 - elapsedMin)) }
-    }
+@MainActor final class HaikuCache {
+    private var cache: [String: String] = [:]
+    private var last: [String: Date] = [:]
+    private var inFlight = false
 
-    /// Median minutes per first-word-of-name across done jobs. Run off the main thread.
-    static func scanHistory() -> [String: Double] {
-        let jd = NSHomeDirectory() + "/.claude/jobs"
-        var by: [String: [Double]] = [:]
-        for d in (try? FileManager.default.contentsOfDirectory(atPath: jd)) ?? [] {
-            guard let sd = FileManager.default.contents(atPath: "\(jd)/\(d)/state.json"),
-                  let s = try? JSONDecoder().decode(StateLite.self, from: sd), s.state == "done",
-                  let name = s.name, let c = s.createdAt.flatMap(iso),
-                  let td = FileManager.default.contents(atPath: "\(jd)/\(d)/timeline.jsonl"),
-                  let txt = String(data: td, encoding: .utf8) else { continue }
-            let lines = txt.split(separator: "\n").compactMap { try? JSONDecoder().decode(TL.self, from: Data($0.utf8)) }
-            guard let last = lines.last(where: { ($0.text ?? "").hasPrefix("result:") }) ?? lines.last(where: { $0.state == "done" }),
-                  let at = last.at.flatMap(iso) else { continue }
-            let mins = at.timeIntervalSince(c) / 60
-            if mins > 0 { by[key(name), default: []].append(mins) }
+    func get(_ id: String, _ key: String) -> String? { cache["\(id)|\(key)"] }
+
+    func request(id: String, key: String, prompt: String) {
+        let k = "\(id)|\(key)"
+        guard cache[k] == nil, !inFlight, Date().timeIntervalSince(last[id] ?? .distantPast) >= 60 else { return }
+        inFlight = true; last[id] = Date()
+        Task {
+            let r = await Task.detached { runHaiku(prompt) }.value
+            inFlight = false
+            if let r { cache[k] = r }
         }
-        return by.mapValues { v in let s = v.sorted(); return s[s.count / 2] }
     }
 }

@@ -8,15 +8,15 @@ enum Layout {
     static let emptyH: CGFloat = 30
 
     static func cardH(_ jobs: [Job], _ g: Geo) -> CGFloat {
-        let body = jobs.isEmpty ? emptyH : CGFloat(jobs.prefix(5).count) * 44
+        let body = jobs.isEmpty ? emptyH : CGFloat(jobs.prefix(5).count) * 58
         return g.notchH + 6 + body + 10
     }
 
     /// Panel size + horizontal offset from screen centre. Panel always matches content so it never blocks clicks.
     static func collapsedW(_ alert: String?, jobs: Int, _ g: Geo) -> CGFloat {
         guard let a = alert else {
-            let n = min(jobs, 4)
-            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 34 + CGFloat(n - 1) * 12 + (jobs > 4 ? 26 : 0)
+            let n = min(jobs, 3)
+            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 170 + CGFloat(n - 1) * 14 + (jobs > 3 ? 26 : 0)
             return max(g.notchW + 80, content + 32)
         }
         return min(g.notchW + 220, max(g.notchW + 80, CGFloat(a.count) * 7.5 + 40))
@@ -24,7 +24,7 @@ enum Layout {
 
     static func rect(expanded: Bool, g: Geo, jobs: [Job], alert: String?) -> (size: CGSize, dx: CGFloat) {
         if expanded { return (CGSize(width: cardW, height: cardH(jobs, g)), 0) }
-        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 32), 0)
+        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 24), 0)
     }
 }
 
@@ -55,75 +55,45 @@ struct RowView: View {
             HStack(spacing: 0) {
                 Text(String(job.title.prefix(28))).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 6)
+                let proj = (job.project == "~" || job.project.isEmpty) ? "" : job.project
                 Group {
-                    Text("\(job.project) · \(Eta.fmt(job.elapsed))").foregroundStyle(.white.opacity(0.5))
-                    + Text(job.stuck.map { " stuck \($0)m" } ?? "").foregroundStyle(.orange)
+                    Text(proj).foregroundStyle(.white.opacity(0.5))
+                    + Text(job.stuck ? " stuck" : "").foregroundStyle(.orange)
                 }.font(.system(size: 11)).lineLimit(1)
             }
-            HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
                 Capsule().fill(.white.opacity(0.15)).frame(width: 110, height: 6)
                     .overlay(alignment: .leading) { Capsule().fill(fill).frame(width: 110 * frac, height: 6) }
+                    .padding(.top, 3)
                 Text(line2(job)).font(.system(size: 11))
-                    .foregroundStyle(blocked ? .orange : .white.opacity(0.6)).lineLimit(1)
-                if let e = job.eta, !blocked {
-                    Spacer(minLength: 4)
-                    Text("maybe \(Eta.fmt(e))").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
-                }
+                    .foregroundStyle(blocked ? .orange : .white.opacity(0.6)).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 16)
-        .frame(height: 44, alignment: .center)
+        .frame(height: 58, alignment: .center)
     }
 }
 
-func stableHash(_ s: String) -> UInt32 {
-    var h: UInt32 = 2166136261
-    for b in s.utf8 { h = (h ^ UInt32(b)) &* 16777619 }
-    return h
-}
-
-func ringHue(_ j: Job) -> Color {
+func itemColor(_ j: Job) -> Color {
+    if j.state == "blocked" || j.stuck { return .orange }
     switch j.state {
-    case "blocked": return .orange
+    case "working", "done": return .green
     case "failed": return .red
-    case "done": return .green
-    default:
-        if j.stuck != nil { return Color(hue: 0.08, saturation: 0.6, brightness: 1) }
-        return Color(hue: Double(stableHash(j.title) % 360) / 360, saturation: 0.75, brightness: 0.95)
+    default: return .gray
     }
 }
 
-struct RingView: View {
+struct PillItem: View {
     let job: Job
-    @State private var spin = false
     var body: some View {
-        let hue = ringHue(job)
-        let full = job.state == "done" || job.state == "failed"
-        let pct = full ? 1 : min(max(Double(job.pct) / 100, 0.04), 1)
-        let spins = job.state == "working" && job.stuck == nil
-        ZStack {
-            Circle().stroke(hue.opacity(0.25), lineWidth: 4)
-            Circle().trim(from: 0, to: pct)
-                .stroke(hue, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-                .rotationEffect(.degrees(spins && spin ? 360 : 0))
-                .animation(spins ? .linear(duration: 6).repeatForever(autoreverses: false) : nil, value: spin)
+        HStack(spacing: 5) {
+            Circle().fill(itemColor(job)).frame(width: 6, height: 6)
+            Text(String(job.title.prefix(12))).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
+            Text(job.state == "blocked" ? job.ask : job.doing).font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.65)).lineLimit(1).truncationMode(.tail)
         }
-        .frame(width: 22, height: 22)
-        .shadow(color: hue.opacity(0.6), radius: 4)
-        .onAppear { spin = true }
-    }
-}
-
-struct MiniBar: View {
-    let job: Job
-    var body: some View {
-        let t = job.title.count > 10 ? String(job.title.prefix(9)) + "…" : job.title
-        VStack(spacing: 3) {
-            RingView(job: job)
-            Text(t).font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.8))
-                .lineLimit(1).minimumScaleFactor(0.7)
-        }.frame(width: 34)
+        .frame(maxWidth: 170, alignment: .leading)
     }
 }
 
@@ -181,27 +151,23 @@ struct Root: View {
                     Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
                     Text("idle").font(.system(size: 11, weight: .medium))
                 } else {
-                    HStack(spacing: 12) {
-                        ForEach(store.jobs.prefix(4)) { MiniBar(job: $0) }
-                        if store.jobs.count > 4 {
-                            Text("+\(store.jobs.count - 4)").font(.system(size: 10)).foregroundStyle(.gray)
+                    HStack(spacing: 14) {
+                        ForEach(store.jobs.prefix(3)) { PillItem(job: $0) }
+                        if store.jobs.count > 3 {
+                            Text("+\(store.jobs.count - 3)").font(.system(size: 10)).foregroundStyle(.gray)
                         }
                     }
                 }
             }
-            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 32)
+            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 24)
         }
-        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 32)
+        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 24)
         .background {
             let shape = UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14)
             ZStack {
                 shape.fill(bg)
                     .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
                     .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse)
-                if al == nil, let first = store.jobs.first {
-                    RadialGradient(colors: [ringHue(first).opacity(0.25), .clear], center: .center, startRadius: 0, endRadius: 60)
-                        .blur(radius: 10).allowsHitTesting(false)
-                }
             }.clipShape(shape)
         }
         .onAppear { pulse = true }
