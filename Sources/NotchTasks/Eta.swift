@@ -106,17 +106,17 @@ func runHaiku(_ prompt: String) -> String? {
 @MainActor final class HaikuCache {
     private var cache: [String: String] = [:]
     private var last: [String: Date] = [:]
-    private var inFlight = false
+    private var inFlight = 0
 
     func get(_ id: String, _ key: String) -> String? { cache["\(id)|\(key)"] }
 
     func request(id: String, key: String, prompt: String) {
         let k = "\(id)|\(key)"
-        guard cache[k] == nil, !inFlight, Date().timeIntervalSince(last[id] ?? .distantPast) >= 60 else { return }
-        inFlight = true; last[id] = Date()
+        guard cache[k] == nil, inFlight < 2, Date().timeIntervalSince(last[id] ?? .distantPast) >= 8 else { return }
+        inFlight += 1; last[id] = Date()
         Task {
             let r = await Task.detached { runHaiku(prompt) }.value
-            inFlight = false
+            inFlight -= 1
             if let r { cache[k] = r }
         }
     }

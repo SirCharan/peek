@@ -24,11 +24,11 @@ private struct Fan: Decodable { let kind: String?; let label: String?; let start
 private struct JobFile: Decodable {
     let state: String, name: String, createdAt: String, updatedAt: String
     let detail: Txt?, needs: Txt?, intent: Txt?
-    let cwd: String?
+    let cwd: String?, sessionId: String?
     let fan: [Fan]?
 }
 private struct SessionFile: Decodable {
-    let pid: Int?, status: String?, kind: String?, name: String?, jobId: String?, spare: Bool?, startedAt: Double?, cwd: String?, sessionId: String?
+    let pid: Int?, status: String?, statusUpdatedAt: Double?, kind: String?, name: String?, jobId: String?, spare: Bool?, startedAt: Double?, cwd: String?, sessionId: String?
 }
 
 @MainActor @Observable final class Store {
@@ -62,6 +62,7 @@ private struct SessionFile: Decodable {
     @ObservationIgnored private var firstMsg: [String: String] = [:]
     @ObservationIgnored private var lastState: [String: String] = [:]
     @ObservationIgnored private var seeded = false
+    @ObservationIgnored private var startDetail: [String: String] = [:]
 
     var running: Int { jobs.filter { $0.state == "working" || $0.state == "blocked" }.count }
     var dotKind: String {
@@ -97,6 +98,20 @@ private struct SessionFile: Decodable {
         let fm = FileManager.default
         let home = NSHomeDirectory()
 
+        struct Sess { let status: String; let at: Double }
+        var sessByJob: [String: Sess] = [:], sessBySid: [String: Sess] = [:]
+        var sessions: [SessionFile] = []
+        let sd = home + "/.claude/sessions"
+        for n in (try? fm.contentsOfDirectory(atPath: sd)) ?? [] where n.hasSuffix(".json") {
+            guard let data = fm.contents(atPath: "\(sd)/\(n)"),
+                  let s = try? JSONDecoder().decode(SessionFile.self, from: data),
+                  s.spare != true, let pid = s.pid, kill(Int32(pid), 0) == 0 else { continue }
+            sessions.append(s)
+            let v = Sess(status: s.status ?? "", at: (s.statusUpdatedAt ?? 0) / 1000)
+            if let j = s.jobId { sessByJob[j] = v }
+            if let sid = s.sessionId { sessBySid[sid] = v }
+        }
+
         var rows: [Job] = []
         var rowIDs = Set<String>(), known = Set<String>()
         let jd = home + "/.claude/jobs"
@@ -104,21 +119,30 @@ private struct SessionFile: Decodable {
             guard let f = load("\(jd)/\(d)/state.json"),
                   let updated = Eta.iso(f.updatedAt) else { continue }
             known.insert(d)
-            let age = now.timeIntervalSince(updated)
-            let show = (f.state == "working" && age < 900) || (f.state == "blocked" && age < 7200)
-                || ((f.state == "done" || f.state == "failed") && age < 60)
+            let sess = sessByJob[d] ?? f.sessionId.flatMap { sessBySid[$0] }
+            var st = f.state
+            if let sess {
+                if sess.status == "busy" { st = "working" } else if sess.status == "waiting" { st = "blocked" }
+            }
+            let last = max(updated.timeIntervalSince1970, sess?.at ?? 0)
+            let age = now.timeIntervalSince1970 - last
+            let show = (st == "working" && age < 900) || (st == "blocked" && age < 7200)
+                || ((st == "done" || st == "failed") && age < 60)
             guard show else { continue }
             let detail = f.detail?.s ?? ""
             let newest = (f.fan ?? []).max { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }?.label ?? ""
             let text = detail.isEmpty ? newest : detail
-            let phase = Eta.phase(state: f.state, text: text)
-                    let needs = f.needs?.s ?? ""
+            let override = st == "working" && f.state != "working"
+            if override { if startDetail[d] == nil { startDetail[d] = detail } } else { startDetail[d] = nil }
+            let starting = override && startDetail[d] == detail
+            let phase = starting ? "starting" : Eta.phase(state: st, text: text)
+            let needs = f.needs?.s ?? ""
             var doing = Eta.clean(text), ask = ""
-            if f.state == "working", !text.isEmpty {
+            if st == "working", !text.isEmpty {
                 let src = String(text.prefix(300))
                 haiku.request(id: d, key: src, prompt: "A coding task reports: \"\(src)\". Rewrite as one plain phrase under 8 words for a non-technical status board, present tense, no file names, paths, commands or code. Reply with the phrase only.")
                 doing = haiku.get(d, src) ?? doing
-            } else if f.state == "blocked" {
+            } else if st == "blocked" {
                 let src = String(needs.prefix(300))
                 ask = Eta.clean(needs, 8)
                 if !src.isEmpty {
@@ -126,19 +150,16 @@ private struct SessionFile: Decodable {
                     ask = haiku.get(d, src) ?? ask
                 }
             }
-            rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: f.state, phase: phase,
-                            pct: Eta.pct(phase: phase, detail: detail),
+            rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: st, phase: phase,
+                            pct: starting ? 5 : Eta.pct(phase: phase, detail: detail),
                             ask: ask, project: Eta.base(f.cwd), doing: doing,
                             agents: (f.fan ?? []).filter { $0.kind == "agent" }.count,
-                            stuck: f.state == "working" && age > 120))
+                            stuck: st == "working" && age > 120))
             rowIDs.insert(d)
         }
 
-        let sd = home + "/.claude/sessions"
-        for n in (try? fm.contentsOfDirectory(atPath: sd)) ?? [] where n.hasSuffix(".json") {
-            guard let data = fm.contents(atPath: "\(sd)/\(n)"),
-                  let s = try? JSONDecoder().decode(SessionFile.self, from: data),
-                  s.spare != true, s.status == "busy", let pid = s.pid, kill(Int32(pid), 0) == 0 else { continue }
+        for s in sessions where s.status == "busy" || s.status == "waiting" {
+            guard let pid = s.pid else { continue }
             if let j = s.jobId {
                 if rowIDs.contains(j) { continue }
                 if s.kind == "bg" && known.contains(j) { continue }
@@ -148,7 +169,7 @@ private struct SessionFile: Decodable {
             if let sid = s.sessionId, Eta.hashLike(s.name ?? "") {
                 if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
             }
-            rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: "working", phase: "working",
+            rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: s.status == "waiting" ? "blocked" : "working", phase: s.status == "waiting" ? "blocked" : "working",
                             pct: 50, ask: "", project: Eta.base(cwd)))
         }
 
