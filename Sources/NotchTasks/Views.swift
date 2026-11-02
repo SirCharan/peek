@@ -13,14 +13,18 @@ enum Layout {
     }
 
     /// Panel size + horizontal offset from screen centre. Panel always matches content so it never blocks clicks.
-    static func collapsedW(_ alert: String?, _ g: Geo) -> CGFloat {
-        guard let a = alert else { return g.notchW + 80 }
+    static func collapsedW(_ alert: String?, jobs: Int, _ g: Geo) -> CGFloat {
+        guard let a = alert else {
+            let n = min(jobs, 4)
+            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 40 + CGFloat(n - 1) * 10 + (jobs > 4 ? 26 : 0)
+            return max(g.notchW + 80, content + 32)
+        }
         return min(g.notchW + 220, max(g.notchW + 80, CGFloat(a.count) * 7.5 + 40))
     }
 
     static func rect(expanded: Bool, g: Geo, jobs: [Job], alert: String?) -> (size: CGSize, dx: CGFloat) {
         if expanded { return (CGSize(width: cardW, height: cardH(jobs, g)), 0) }
-        return (CGSize(width: collapsedW(alert, g), height: g.notchH + 24), 0)
+        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 24), 0)
     }
 }
 
@@ -69,6 +73,22 @@ struct RowView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 44, alignment: .center)
+    }
+}
+
+struct MiniBar: View {
+    let job: Job
+    var body: some View {
+        let fill: Color = job.state == "done" ? .green : job.state == "failed" ? .red
+            : job.stuck != nil ? .orange : .white.opacity(0.85)
+        let frac = job.state == "done" || job.state == "failed" ? 1 : CGFloat(job.pct) / 100
+        let t = job.title.count > 10 ? String(job.title.prefix(9)) + "…" : job.title
+        VStack(spacing: 2) {
+            Text(t).font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Capsule().fill(.white.opacity(0.2)).frame(width: 40, height: 4)
+                .overlay(alignment: .leading) { Capsule().fill(fill).frame(width: 40 * frac, height: 4) }
+        }.frame(width: 40)
     }
 }
 
@@ -122,14 +142,21 @@ struct Root: View {
             HStack(spacing: 6) {
                 if let al {
                     Text(al.text).font(.system(size: 11, weight: .bold)).lineLimit(1)
-                } else {
+                } else if store.jobs.isEmpty {
                     Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
-                    Text(store.summary).font(.system(size: 11, weight: .medium)).monospacedDigit()
+                    Text("idle").font(.system(size: 11, weight: .medium))
+                } else {
+                    HStack(spacing: 10) {
+                        ForEach(store.jobs.prefix(4)) { MiniBar(job: $0) }
+                        if store.jobs.count > 4 {
+                            Text("+\(store.jobs.count - 4)").font(.system(size: 10)).foregroundStyle(.gray)
+                        }
+                    }
                 }
             }
             .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 24)
         }
-        .frame(width: Layout.collapsedW(al?.text, geo), height: geo.notchH + 24)
+        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 24)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(bg)
             .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
             .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse))
