@@ -41,6 +41,7 @@ private struct SessionFile: Decodable {
     var shown: [Job] { !expanded && open ? (jobs.contains { $0.id == popID } ? jobs.filter { $0.id == popID } : jobs) : jobs }
     @ObservationIgnored private var acked: Set<String> = []
     @ObservationIgnored private var alertKey: String?
+    var alertJobID: String? { alertKey?.split(separator: "|").first.map(String.init) }
     func syncOpen() {
         if expanded, let k = alertKey, acked.insert(k).inserted { updateAlert() }
         let o = expanded || Date() < popUntil; if o != open { open = o }

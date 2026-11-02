@@ -59,7 +59,7 @@ final class NotchPanel: NSPanel {
     }
 
     func reframe() {
-        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, alert: store.alert?.text)
+        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown)
         let f = NSRect(x: screen.frame.midX + r.dx - r.size.width / 2, y: screen.frame.maxY - r.size.height,
                        width: r.size.width, height: r.size.height)
         collapseTask?.cancel()

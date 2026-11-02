@@ -7,38 +7,24 @@ enum Layout {
     static let cardW: CGFloat = 340
     static let emptyH: CGFloat = 30
 
+    static let wing: CGFloat = 72
+
+    static func bandW(_ g: Geo) -> CGFloat { g.notchW + 2 * wing }
+
     static func cardH(_ jobs: [Job], _ g: Geo) -> CGFloat {
         let body = jobs.isEmpty ? emptyH : CGFloat(jobs.prefix(5).count) * 58
         return g.notchH + 6 + body + 10
     }
 
-    /// Panel size + horizontal offset from screen centre. Panel always matches content so it never blocks clicks.
-    static func collapsedW(_ alert: String?, jobs: Int, _ g: Geo) -> CGFloat {
-        guard let a = alert else {
-            let n = min(jobs, 3)
-            let content: CGFloat = n == 0 ? 50 : CGFloat(n) * 170 + CGFloat(n - 1) * 14 + (jobs > 3 ? 26 : 0)
-            return max(g.notchW + 80, content + 32)
-        }
-        return min(g.notchW + 220, max(g.notchW + 80, CGFloat(a.count) * 7.5 + 40))
-    }
-
-    static func rect(expanded: Bool, g: Geo, jobs: [Job], alert: String?) -> (size: CGSize, dx: CGFloat) {
-        if expanded { return (CGSize(width: cardW, height: cardH(jobs, g)), 0) }
-        return (CGSize(width: collapsedW(alert, jobs: jobs.count, g), height: g.notchH + 24), 0)
-    }
-}
-
-func dotColor(_ kind: String) -> Color {
-    switch kind {
-    case "working": .green
-    case "blocked": .orange
-    case "failed": .red
-    default: .gray
+    /// Panel size + horizontal offset from screen centre. Collapsed = menu bar band only.
+    static func rect(expanded: Bool, g: Geo, jobs: [Job]) -> (size: CGSize, dx: CGFloat) {
+        if expanded { return (CGSize(width: max(cardW, bandW(g)), height: cardH(jobs, g)), 0) }
+        return (CGSize(width: bandW(g), height: g.notchH), 0)
     }
 }
 
 func line2(_ j: Job) -> String {
-    if j.state == "blocked" { return "needs you · \(j.ask)" }
+    if j.state == "blocked" { return j.ask.isEmpty ? "needs you" : "needs you · \(j.ask)" }
     if j.state == "done" || j.state == "failed" { return j.state }
     var s = j.doing.isEmpty ? j.phase : "\(j.phase) · \(j.doing)"
     if j.agents > 0 { s += " · \(j.agents) agent\(j.agents == 1 ? "" : "s")" }
@@ -84,16 +70,41 @@ func itemColor(_ j: Job) -> Color {
     }
 }
 
-struct PillItem: View {
-    let job: Job
+struct Wings: View {
+    let store: Store
+    let geo: Geo
+    @State private var pulse = false
+
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(itemColor(job)).frame(width: 6, height: 6)
-            Text(String(job.title.prefix(12))).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
-            Text(job.state == "blocked" ? job.ask : job.doing).font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.65)).lineLimit(1).truncationMode(.tail)
+        let al = store.alert
+        HStack(spacing: 0) {
+            HStack(spacing: 5) {
+                if store.jobs.isEmpty {
+                    Circle().fill(.gray).frame(width: 6, height: 6)
+                } else {
+                    ForEach(store.jobs.prefix(6)) { j in
+                        let alerting = j.id == store.alertJobID
+                        Circle().fill(itemColor(j)).frame(width: 6, height: 6)
+                            .opacity(alerting && pulse ? 0.4 : 1)
+                            .animation(alerting ? .easeInOut(duration: 0.8).repeatForever() : .default, value: pulse)
+                    }
+                }
+            }
+            .frame(width: Layout.wing, height: geo.notchH)
+            Spacer(minLength: 0).frame(width: geo.notchW)
+            Group {
+                if let al {
+                    let (label, col): (String, Color) = al.kind == "needs" ? ("NEEDS YOU", .orange) : al.kind == "done" ? ("DONE", .green) : ("FAILED", .red)
+                    Text(label).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
+                } else if !store.jobs.isEmpty {
+                    Text("\(store.jobs.count)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                }
+            }
+            .lineLimit(1).fixedSize()
+            .frame(width: Layout.wing, height: geo.notchH)
         }
-        .frame(maxWidth: 170, alignment: .leading)
+        .frame(width: Layout.bandW(geo), height: geo.notchH)
+        .onAppear { pulse = true }
     }
 }
 
@@ -102,7 +113,8 @@ struct Card: View {
     let geo: Geo
     var body: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: geo.notchH + 6)
+            Wings(store: store, geo: geo)
+            Color.clear.frame(height: 6)
             if store.shown.isEmpty {
                 Text("No Claude tasks running").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
                     .frame(height: Layout.emptyH)
@@ -111,7 +123,7 @@ struct Card: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
-        .frame(width: Layout.cardW, height: Layout.cardH(store.shown, geo), alignment: .top)
+        .frame(width: max(Layout.cardW, Layout.bandW(geo)), height: Layout.cardH(store.shown, geo), alignment: .top)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 20, bottomTrailingRadius: 20).fill(.black))
     }
 }
@@ -120,7 +132,6 @@ struct Root: View {
     let store: Store
     let geo: Geo
     @Namespace private var ns
-    @State private var pulse = false
     private let spring = Animation.spring(duration: 0.35, bounce: 0.25)
 
     var body: some View {
@@ -140,36 +151,7 @@ struct Root: View {
     }
 
     private var collapsed: some View {
-        let al = store.alert
-        let bg: Color = al.map { $0.kind == "needs" ? .orange : $0.kind == "done" ? .green : .red } ?? .black
-        return VStack(spacing: 0) {
-            Color.clear.frame(height: geo.notchH)
-            HStack(spacing: 6) {
-                if let al {
-                    Text(al.text).font(.system(size: 11, weight: .bold)).lineLimit(1)
-                } else if store.jobs.isEmpty {
-                    Circle().fill(dotColor(store.dotKind)).frame(width: 7, height: 7)
-                    Text("idle").font(.system(size: 11, weight: .medium))
-                } else {
-                    HStack(spacing: 14) {
-                        ForEach(store.jobs.prefix(3)) { PillItem(job: $0) }
-                        if store.jobs.count > 3 {
-                            Text("+\(store.jobs.count - 3)").font(.system(size: 10)).foregroundStyle(.gray)
-                        }
-                    }
-                }
-            }
-            .foregroundStyle(al == nil || al?.kind == "failed" ? .white : .black).frame(height: 24)
-        }
-        .frame(width: Layout.collapsedW(al?.text, jobs: store.jobs.count, geo), height: geo.notchH + 24)
-        .background {
-            let shape = UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14)
-            ZStack {
-                shape.fill(bg)
-                    .opacity(al?.kind == "needs" && pulse ? 0.75 : 1)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(), value: pulse)
-            }.clipShape(shape)
-        }
-        .onAppear { pulse = true }
+        Wings(store: store, geo: geo)
+            .background(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10).fill(.black))
     }
 }
