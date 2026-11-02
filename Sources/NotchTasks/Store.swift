@@ -39,7 +39,22 @@ private struct SessionFile: Decodable {
     @ObservationIgnored var popUntil = Date.distantPast
     @ObservationIgnored var popID = ""
     var shown: [Job] { !expanded && open ? (jobs.contains { $0.id == popID } ? jobs.filter { $0.id == popID } : jobs) : jobs }
-    func syncOpen() { let o = expanded || Date() < popUntil; if o != open { open = o } }
+    @ObservationIgnored private var acked: Set<String> = []
+    @ObservationIgnored private var alertKey: String?
+    func syncOpen() {
+        if expanded, let k = alertKey, acked.insert(k).inserted { updateAlert() }
+        let o = expanded || Date() < popUntil; if o != open { open = o }
+    }
+    private func updateAlert() {
+        func t(_ k: String, _ l: String) -> (kind: String, text: String, key: String)? {
+            jobs.first { $0.state == k && !acked.contains("\($0.id)|\($0.state)") }
+                .map { (k == "blocked" ? "needs" : k, "\(l) · \($0.title.prefix(18))", "\($0.id)|\($0.state)") }
+        }
+        let al = t("blocked", "NEEDS YOU") ?? t("done", "DONE") ?? t("failed", "FAILED")
+        alertKey = al?.key
+        let v = al.map { (kind: $0.kind, text: $0.text) }
+        if v?.kind != alert?.kind || v?.text != alert?.text { alert = v }
+    }
 
     @ObservationIgnored private var cache: [String: (Date, JobFile?)] = [:]
     @ObservationIgnored private let haiku = HaikuCache()
@@ -148,11 +163,8 @@ private struct SessionFile: Decodable {
         }
         seeded = true
         if rows != jobs { jobs = rows }
-        func t(_ k: String, _ l: String) -> (kind: String, text: String)? {
-            rows.first { $0.state == k }.map { (k == "blocked" ? "needs" : k, "\(l) · \($0.title.prefix(18))") }
-        }
-        let al = t("blocked", "NEEDS YOU") ?? t("done", "DONE") ?? t("failed", "FAILED")
-        if al?.kind != alert?.kind || al?.text != alert?.text { alert = al }
+        acked = acked.filter { k in rows.contains { k.hasPrefix($0.id + "|") } }
+        updateAlert()
         syncOpen()
     }
 }
