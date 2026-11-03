@@ -82,4 +82,16 @@ import AppKit
             Task.detached { _ = osa("tell application \"Terminal\" to do script \"\(esc)\" in tab \(t.tab) of window \(t.window)") }
         }
     }
+
+    private static var frontCache: [String: (Date, Bool)] = [:]
+    /// True when Terminal is frontmost and its selected tab's title contains the job title. Cached 2 s.
+    static func isFront(_ job: Job) async -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return false }
+        if let c = frontCache[job.id], c.0 > Date() { return c.1 }
+        let title = job.title.trimmingCharacters(in: .whitespaces), sid = String(job.sid.prefix(8))
+        let t = await Task.detached { osa("tell application \"Terminal\" to get custom title of selected tab of front window") }.value
+        let r = !t.isEmpty && ((!title.isEmpty && t.contains(title)) || (!sid.isEmpty && t.contains(sid)))
+        frontCache[job.id] = (Date().addingTimeInterval(2), r)
+        return r
+    }
 }

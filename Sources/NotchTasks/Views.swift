@@ -204,6 +204,22 @@ struct RowView: View {
     }
 }
 
+/// 12pt two-frame glyph, 600 ms per frame.
+struct Buddy: View {
+    let kind: String
+    let tint: Color?
+    private static let frames: [String: (String, String)] = [
+        "working": ("◐", "◑"), "needs": ("(!)", "( )"), "done": ("✓", "✓"),
+        "compacting": ("◌", "◍"), "idle": ("·", "·"), "failed": ("✗", "✗")]
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.6)) { c in
+            let f = Buddy.frames[kind] ?? ("·", "·")
+            let on = Int(c.date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
+            Text(on ? f.0 : f.1).font(.system(size: 12, design: .monospaced)).foregroundStyle(tint ?? .white.opacity(0.7))
+        }
+    }
+}
+
 struct Wings: View {
     let store: Store
     let geo: Geo
@@ -223,9 +239,10 @@ struct Wings: View {
             }
             .frame(width: Layout.wing, height: geo.notchH)
             Spacer(minLength: 0).frame(width: geo.notchW)
-            Group {
+            HStack(spacing: 4) {
+                if !store.jobs.isEmpty { Buddy(kind: store.buddy, tint: al.map { $0.kind == "needs" ? amber : $0.kind == "done" ? .green : .red }) }
                 if let al {
-                    let (label, col): (String, Color) = al.kind == "needs" ? ("NEEDS YOU", amber) : al.kind == "done" ? ("DONE", .green) : ("FAILED", .red)
+                    let (label, col): (String, Color) = al.kind == "needs" ? ("NEEDS", amber) : al.kind == "done" ? ("DONE", .green) : ("FAILED", .red)
                     Text(label).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
                 } else if !store.jobs.isEmpty {
                     Text("\(store.jobs.count)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
@@ -235,6 +252,13 @@ struct Wings: View {
             .frame(width: Layout.wing, height: geo.notchH)
         }
         .frame(width: Layout.bandW(geo), height: geo.notchH)
+        .keyframeAnimator(initialValue: CGFloat(0), trigger: store.bounceTick) { v, y in v.offset(y: y) } keyframes: { _ in
+            KeyframeTrack {
+                SpringKeyframe(-3, duration: 0.15); SpringKeyframe(0, duration: 0.15)
+                SpringKeyframe(-3, duration: 0.15); SpringKeyframe(0, duration: 0.15)
+                SpringKeyframe(-3, duration: 0.15); SpringKeyframe(0, duration: 0.15)
+            }
+        }
     }
 }
 

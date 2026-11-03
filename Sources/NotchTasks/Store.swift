@@ -51,6 +51,26 @@ private struct SessionFile: Decodable {
     var alert: (kind: String, text: String)?
     @ObservationIgnored var popUntil = Date.distantPast
     @ObservationIgnored var popID = ""
+    var bounceUntil = Date.distantPast
+    var bounceTick = 0
+    private static let fallback = ["needs": "Ping", "done": "Glass", "fail": "Basso"]
+    private static var sounds: [String: NSSound] = [:]
+    static func sound(_ n: String) -> NSSound? {
+        if let s = sounds[n] { return s }
+        let s = Bundle.module.url(forResource: n, withExtension: "wav", subdirectory: "Sounds")
+            .flatMap { NSSound(contentsOf: $0, byReference: true) } ?? fallback[n].flatMap { NSSound(named: $0) }
+        sounds[n] = s
+        return s
+    }
+    static func play(_ n: String) { sound(n)?.stop(); sound(n)?.play() }
+    /// overall state for the buddy glyph
+    var buddy: String {
+        if jobs.contains(where: { $0.needsYou }) { return "needs" }
+        if jobs.contains(where: { $0.state == "failed" }) { return "failed" }
+        if jobs.contains(where: { $0.state == "done" }) { return "done" }
+        if jobs.contains(where: { $0.state == "compacting" }) { return "compacting" }
+        return running > 0 ? "working" : "idle"
+    }
     var shown: [Job] { !expanded && open ? (jobs.contains { $0.id == popID } ? jobs.filter { $0.id == popID } : jobs) : jobs }
     @ObservationIgnored private var acked: Set<String> = []
     @ObservationIgnored private var alertKey: String?
@@ -300,13 +320,27 @@ private struct SessionFile: Decodable {
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
         rows.sort { (w($0), $0.id) < (w($1), $1.id) }
+        var fired: [(Job, String)] = []
         for j in rows where lastState[j.id] != j.state {
-            let snd = j.needsYou ? "Ping" : j.state == "done" ? "Glass" : j.state == "failed" ? "Basso" : nil
-            if seeded, let snd {
-                NSSound(named: snd)?.play()
-                popUntil = now + 4; popID = j.id
-            }
+            let snd = j.needsYou ? "needs" : j.state == "done" ? "done" : j.state == "failed" ? "fail" : nil
+            if seeded, let snd { fired.append((j, snd)) }
             lastState[j.id] = j.state
+        }
+        if !fired.isEmpty {
+            Task {
+                for (j, snd) in fired {
+                    let front = await Focus.isFront(j)
+                    FileHandle.standardError.write(Data("alert: \(j.title) front=\(front)\n".utf8))
+                    if front {
+                        FileHandle.standardError.write(Data("alert: front→bounce\n".utf8))
+                        bounceUntil = Date().addingTimeInterval(0.9); bounceTick += 1
+                    } else {
+                        Store.play(snd)
+                        popUntil = Date().addingTimeInterval(4); popID = j.id
+                    }
+                }
+                syncOpen()
+            }
         }
         seeded = true
         if rows != jobs { jobs = rows }
