@@ -13,7 +13,13 @@ struct Job: Identifiable, Equatable, Sendable {
     var doing = ""
     var agents = 0
     var stuck = false
+    var tool = ""
+    var ctxPct: Int?
+    var compacting = false
+    var ntype = ""
 }
+
+private struct Ev { var tool = "", ntype = "", msg = "", last = "", compacting = false }
 
 // ponytail: tolerant text field — any non-string value decodes to nil instead of failing the file
 private struct Txt: Decodable {
@@ -63,6 +69,47 @@ private struct SessionFile: Decodable {
     @ObservationIgnored private var lastState: [String: String] = [:]
     @ObservationIgnored private var seeded = false
     @ObservationIgnored private var startDetail: [String: String] = [:]
+    @ObservationIgnored private var evOffset: [String: UInt64] = [:]
+    @ObservationIgnored private var evBySid: [String: Ev] = [:]
+
+    /// Tails ~/.claude/notch-events/*.jsonl by byte offset and folds new lines into per-session state.
+    private func tailEvents(_ dir: String) {
+        let fm = FileManager.default
+        for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where n.hasSuffix(".jsonl") {
+            let path = "\(dir)/\(n)", sid = String(n.dropLast(6))
+            let size = ((try? fm.attributesOfItem(atPath: path))?[.size] as? UInt64) ?? 0
+            var off = evOffset[path] ?? 0
+            if size < off { off = 0 }  // hook truncated the file
+            guard size > off, let fh = FileHandle(forReadingAtPath: path) else { continue }
+            defer { try? fh.close() }
+            try? fh.seek(toOffset: off)
+            guard let data = try? fh.readToEnd() else { continue }
+            // only consume complete lines
+            guard let end = data.lastIndex(of: UInt8(ascii: "\n")) else { continue }
+            evOffset[path] = off + UInt64(end - data.startIndex + 1)
+            var e = evBySid[sid] ?? Ev()
+            for l in data[data.startIndex..<end].split(separator: UInt8(ascii: "\n")) {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(l)) as? [String: Any], let ev = o["ev"] as? String else { continue }
+                let tool = o["tool"] as? String ?? "", target = o["target"] as? String ?? ""
+                switch ev {
+                case "PreToolUse": e.tool = target.isEmpty ? tool : "\(tool) \(target)"
+                case "PostToolUse", "Stop", "UserPromptSubmit":
+                    e.tool = ""
+                    if ev == "Stop" { e.last = o["last"] as? String ?? "" }
+                    if ev != "PostToolUse" { e.ntype = ""; e.msg = "" }
+                case "Notification": e.ntype = o["ntype"] as? String ?? ""; e.msg = o["msg"] as? String ?? ""
+                case "PreCompact": e.compacting = true
+                case "PostCompact": e.compacting = false
+                default: break
+                }
+            }
+            evBySid[sid] = e
+        }
+    }
+    private func ctxPct(_ sid: String?, _ home: String) -> Int? {
+        guard let sid, let s = try? String(contentsOfFile: "\(home)/.claude/notch-events/ctx/\(sid)", encoding: .utf8) else { return nil }
+        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
 
     var running: Int { jobs.filter { $0.state == "working" || $0.state == "blocked" }.count }
     var dotKind: String {
@@ -112,6 +159,7 @@ private struct SessionFile: Decodable {
             if let sid = s.sessionId { sessBySid[sid] = v }
         }
 
+        tailEvents(home + "/.claude/notch-events")
         var rows: [Job] = []
         var rowIDs = Set<String>(), known = Set<String>()
         let jd = home + "/.claude/jobs"
@@ -154,7 +202,11 @@ private struct SessionFile: Decodable {
                             pct: starting ? 5 : Eta.pct(phase: phase, detail: detail),
                             ask: ask, project: Eta.base(f.cwd), doing: doing,
                             agents: (f.fan ?? []).filter { $0.kind == "agent" }.count,
-                            stuck: st == "working" && age > 120))
+                            stuck: st == "working" && age > 120,
+                            tool: f.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
+                            ctxPct: ctxPct(f.sessionId, home),
+                            compacting: f.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
+                            ntype: f.sessionId.flatMap { evBySid[$0]?.ntype } ?? ""))
             rowIDs.insert(d)
         }
 
@@ -170,7 +222,11 @@ private struct SessionFile: Decodable {
                 if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
             }
             rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: s.status == "waiting" ? "blocked" : "working", phase: s.status == "waiting" ? "blocked" : "working",
-                            pct: 50, ask: "", project: Eta.base(cwd)))
+                            pct: 50, ask: "", project: Eta.base(cwd),
+                            tool: s.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
+                            ctxPct: ctxPct(s.sessionId, home),
+                            compacting: s.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
+                            ntype: s.sessionId.flatMap { evBySid[$0]?.ntype } ?? ""))
         }
 
         func w(_ j: Job) -> Int { j.state == "blocked" ? 0 : j.state == "working" ? 1 : 2 }

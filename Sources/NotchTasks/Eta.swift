@@ -75,11 +75,25 @@ enum Eta {
 /// ponytail: blocking; call from Task.detached. Output assumed to be a JSON ARRAY of messages; we take the "result" element.
 func runHaiku(_ prompt: String) -> String? {
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/Users/ck/.local/bin/claude")
+    let home = NSHomeDirectory()
+    let dirs = [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+    var exe = dirs.map { $0 + "/claude" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+    if exe == nil {
+        let w = Process(); let o = Pipe()
+        w.executableURL = URL(fileURLWithPath: "/usr/bin/which"); w.arguments = ["claude"]
+        w.environment = ["PATH": dirs.joined(separator: ":") + ":/usr/bin:/bin"]
+        w.standardOutput = o; w.standardError = FileHandle.nullDevice
+        if (try? w.run()) != nil {
+            let out = String(decoding: o.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !out.isEmpty { exe = out }
+        }
+    }
+    guard let exe else { return nil }
+    p.executableURL = URL(fileURLWithPath: exe)
     p.arguments = ["-p", "--model", "haiku", "--output-format", "json", "--strict-mcp-config", "--no-session-persistence",
                    "--disable-slash-commands", "--setting-sources", "", "--tools", ""]
     var env = ProcessInfo.processInfo.environment
-    env["PATH"] = "/Users/ck/.local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+    env["PATH"] = dirs.joined(separator: ":") + ":" + (env["PATH"] ?? "/usr/bin:/bin")
     if env["HOME"] == nil { env["HOME"] = NSHomeDirectory() }
     p.environment = env
     p.currentDirectoryURL = URL(fileURLWithPath: "/tmp")
