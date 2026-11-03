@@ -12,15 +12,15 @@ enum Layout {
     static func bandW(_ g: Geo) -> CGFloat { g.notchW + 2 * wing }
     static func cardW(_ g: Geo) -> CGFloat { max(380, g.notchW + 144) }
 
-    static func h(_ j: Job) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? 52 : rowH }
-    static func cardH(_ jobs: [Job], _ g: Geo) -> CGFloat {
-        let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1) }
+    static func h(_ j: Job, replying: String? = nil) -> CGFloat { (j.state == "approval" && j.flash.isEmpty) || (j.state == "input" && replying == j.id) ? 52 : rowH }
+    static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil) -> CGFloat {
+        let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) }
         return g.notchH + body + 10
     }
 
     /// Panel size + horizontal offset from screen centre. Collapsed = menu bar band only.
-    static func rect(expanded: Bool, g: Geo, jobs: [Job]) -> (size: CGSize, dx: CGFloat) {
-        if expanded { return (CGSize(width: cardW(g), height: cardH(jobs, g)), 0) }
+    static func rect(expanded: Bool, g: Geo, jobs: [Job], replying: String? = nil) -> (size: CGSize, dx: CGFloat) {
+        if expanded { return (CGSize(width: cardW(g), height: cardH(jobs, g, replying: replying)), 0) }
         return (CGSize(width: bandW(g), height: g.notchH), 0)
     }
 }
@@ -105,7 +105,10 @@ struct RowView: View {
             let b: Color = job.state == "done" ? .green : job.state == "failed" ? .red : (job.needsYou || job.stuck) ? amber : .white.opacity(0.45)
             return (b, job.state == "done" || job.state == "failed" ? 1 : CGFloat(min(max(job.pct, 0), 100)) / 100)
         }()
-        if job.state == "approval", job.flash.isEmpty { approval(bar: bar, frac: frac) } else {
+        Group {
+        if job.state == "approval", job.flash.isEmpty { approval(bar: bar, frac: frac) }
+        else if job.state == "input", store.replying == job.id { replyRow(bar: bar, frac: frac) }
+        else {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
@@ -113,6 +116,11 @@ struct RowView: View {
                     .lineLimit(1).frame(width: 96, alignment: .leading)
                 phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if job.state == "input" {
+                    Button { startReply() } label: {
+                        Text("Reply…").font(.system(size: 11)).foregroundStyle(amber.opacity(hasTab ? 1 : 0.4)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!hasTab).help(hasTab ? "" : "no terminal tab")
+                }
             }
             .frame(height: Layout.rowH - 2)
             GeometryReader { p in
@@ -124,6 +132,51 @@ struct RowView: View {
         .padding(.horizontal, 14)
         .frame(height: Layout.rowH)
         }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { Focus.jump(job, store: store) }
+        .task(id: job.id + job.state) { if job.state == "input" { hasTab = await Focus.tab(job) != nil } }
+    }
+
+    @State private var hasTab = true
+    @State private var text = ""
+    @FocusState private var fieldFocus: Bool
+    var panel: NSWindow? { NSApp.windows.first { $0 is NSPanel && $0.level == .statusBar } }
+
+    private func startReply() {
+        text = ""; store.replying = job.id
+    }
+    private func endReply() {
+        store.replying = nil; panel?.resignKey()
+    }
+    private func send() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { Focus.send(job, t) }
+        endReply()
+    }
+
+    private func replyRow(bar: Color, frac: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                StateDot(job: job, alerting: false)
+                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Spacer(minLength: 0)
+            }.frame(height: 18)
+            HStack(spacing: 8) {
+                TextField("Reply…", text: $text).textFieldStyle(.plain).font(.system(size: 11)).foregroundStyle(.white)
+                    .padding(.horizontal, 8).frame(height: 22)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.12)))
+                    .focused($fieldFocus).onSubmit { send() }
+                    .onExitCommand { endReply() }
+                Button { send() } label: {
+                    Text("Send").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber)).contentShape(Capsule())
+                }.buttonStyle(.plain)
+            }.frame(height: 30)
+            Color.clear.frame(height: 2)
+        }
+        .padding(.horizontal, 14).frame(height: 52)
+        .onAppear { panel?.makeKey(); fieldFocus = true }
     }
 
     private func approval(bar: Color, frac: CGFloat) -> some View {
@@ -199,7 +252,7 @@ struct Card: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
-        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo), alignment: .top)
+        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo, replying: store.replying), alignment: .top)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(.black))
     }
 }

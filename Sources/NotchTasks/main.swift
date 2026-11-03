@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 final class NotchPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
     var contextMenu: NSMenu?
     // let the panel sit over the menu bar / notch band
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
@@ -59,7 +60,7 @@ final class NotchPanel: NSPanel {
     }
 
     func reframe() {
-        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown)
+        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, replying: store.replying)
         let f = NSRect(x: screen.frame.midX + r.dx - r.size.width / 2, y: screen.frame.maxY - r.size.height,
                        width: r.size.width, height: r.size.height)
         collapseTask?.cancel()
@@ -76,7 +77,7 @@ final class NotchPanel: NSPanel {
 
     func track() {
         withObservationTracking {
-            _ = store.open; _ = store.expanded; _ = store.jobs; _ = store.alert
+            _ = store.open; _ = store.expanded; _ = store.replying; _ = store.jobs; _ = store.alert
         } onChange: {
             Task { @MainActor in self.reframe(); self.track() }
         }

@@ -20,6 +20,7 @@ struct Job: Identifiable, Equatable, Sendable {
     var ask2 = ""
     var perm: Perm?
     var flash = ""
+    var sid = ""
     var needsYou: Bool { state == "approval" || state == "input" }
 }
 
@@ -127,7 +128,11 @@ private struct SessionFile: Decodable {
         let fm = FileManager.default
         for n in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() where n.hasPrefix(sid + "-") && n.hasSuffix(".json") {
             let p = "\(dir)/\(n)"
-            guard !fm.fileExists(atPath: p + ".reply"), let d = fm.contents(atPath: p),
+            let rp = String(p.dropLast(5)) + ".reply"
+            if let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, Date().timeIntervalSince(m) > 120, !fm.fileExists(atPath: rp) {
+                try? fm.removeItem(atPath: p); continue  // hook timed out long ago
+            }
+            guard !fm.fileExists(atPath: rp), let d = fm.contents(atPath: p),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
             let tool = o["tool_name"] as? String ?? "tool"
             var tg = o["target"] as? String ?? ""
@@ -140,9 +145,20 @@ private struct SessionFile: Decodable {
     func reply(_ j: Job, _ verb: String) {
         guard let p = j.perm else { return }
         let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied") : ("always", "allowed")
-        try? body.write(toFile: p.path + ".reply", atomically: true, encoding: .utf8)
+        try? body.write(toFile: String(p.path.dropLast(5)) + ".reply", atomically: true, encoding: .utf8)
         flashes[j.id] = (label, Date().addingTimeInterval(3))
         refresh()
+    }
+    func flash(_ id: String, _ text: String, secs: Double = 3) {
+        flashes[id] = (text, Date().addingTimeInterval(secs)); refresh()
+    }
+    var replying: String?
+    private func sweepPerm(_ dir: String) {
+        let fm = FileManager.default
+        for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where n.hasSuffix(".reply") {
+            let p = "\(dir)/\(n)"
+            if let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, Date().timeIntervalSince(m) > 120 { try? fm.removeItem(atPath: p) }
+        }
     }
     private func ev(_ sid: String?) -> Ev { sid.flatMap { evBySid[$0] } ?? Ev() }
     private static let inputTypes: Set<String> = ["idle_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog"]
@@ -197,6 +213,7 @@ private struct SessionFile: Decodable {
 
         tailEvents(home + "/.claude/notch-events")
         let permDir = home + "/.claude/notch-events/perm"
+        sweepPerm(permDir)
         flashes = flashes.filter { $0.value.1 > now }
         var rows: [Job] = []
         var rowIDs = Set<String>(), known = Set<String>()
@@ -253,7 +270,7 @@ private struct SessionFile: Decodable {
                             tool: f.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
                             ctxPct: ctxPct(f.sessionId, home),
                             compacting: f.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: fl))
+                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: fl, sid: f.sessionId ?? ""))
             rowIDs.insert(d)
         }
 
@@ -278,7 +295,7 @@ private struct SessionFile: Decodable {
                             tool: s.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
                             ctxPct: ctxPct(s.sessionId, home),
                             compacting: s.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: flashes[jid].map { $0.0 } ?? ""))
+                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: flashes[jid].map { $0.0 } ?? "", sid: s.sessionId ?? ""))
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
