@@ -17,7 +17,13 @@ struct Job: Identifiable, Equatable, Sendable {
     var ctxPct: Int?
     var compacting = false
     var ntype = ""
+    var ask2 = ""
+    var perm: Perm?
+    var flash = ""
+    var needsYou: Bool { state == "approval" || state == "input" }
 }
+
+struct Perm: Equatable, Sendable { var tool: String; var target: String; var path: String }
 
 private struct Ev { var tool = "", ntype = "", msg = "", last = "", compacting = false }
 
@@ -54,10 +60,10 @@ private struct SessionFile: Decodable {
     }
     private func updateAlert() {
         func t(_ k: String, _ l: String) -> (kind: String, text: String, key: String)? {
-            jobs.first { $0.state == k && !acked.contains("\($0.id)|\($0.state)") }
-                .map { (k == "blocked" ? "needs" : k, "\(l) · \($0.title.prefix(18))", "\($0.id)|\($0.state)") }
+            jobs.first { (k == "needs" ? $0.needsYou : $0.state == k) && !acked.contains("\($0.id)|\($0.state)") }
+                .map { (k, "\(l) · \($0.title.prefix(18))", "\($0.id)|\($0.state)") }
         }
-        let al = t("blocked", "NEEDS YOU") ?? t("done", "DONE") ?? t("failed", "FAILED")
+        let al = t("needs", "NEEDS YOU") ?? t("done", "DONE") ?? t("failed", "FAILED")
         alertKey = al?.key
         let v = al.map { (kind: $0.kind, text: $0.text) }
         if v?.kind != alert?.kind || v?.text != alert?.text { alert = v }
@@ -92,10 +98,14 @@ private struct SessionFile: Decodable {
                 guard let o = try? JSONSerialization.jsonObject(with: Data(l)) as? [String: Any], let ev = o["ev"] as? String else { continue }
                 let tool = o["tool"] as? String ?? "", target = o["target"] as? String ?? ""
                 switch ev {
-                case "PreToolUse": e.tool = target.isEmpty ? tool : "\(tool) \(target)"
+                case "PreToolUse":
+                    let tg = tool == "Bash" ? Eta.bash(target) : target
+                    e.tool = tg.isEmpty ? tool : "\(tool) \(tg)"
+                    e.ntype = ""; e.msg = ""
                 case "PostToolUse", "Stop", "UserPromptSubmit":
                     e.tool = ""
                     if ev == "Stop" { e.last = o["last"] as? String ?? "" }
+                    if ev == "UserPromptSubmit" { e.last = "" }
                     if ev != "PostToolUse" { e.ntype = ""; e.msg = "" }
                 case "Notification": e.ntype = o["ntype"] as? String ?? ""; e.msg = o["msg"] as? String ?? ""
                 case "PreCompact": e.compacting = true
@@ -111,14 +121,40 @@ private struct SessionFile: Decodable {
         return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    var running: Int { jobs.filter { $0.state == "working" || $0.state == "blocked" }.count }
+    /// Pending approvals: perm/<sid>-*.json with no sibling .reply.
+    private func pendingPerm(_ sid: String?, _ dir: String) -> Perm? {
+        guard let sid else { return nil }
+        let fm = FileManager.default
+        for n in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() where n.hasPrefix(sid + "-") && n.hasSuffix(".json") {
+            let p = "\(dir)/\(n)"
+            guard !fm.fileExists(atPath: p + ".reply"), let d = fm.contents(atPath: p),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+            let tool = o["tool_name"] as? String ?? "tool"
+            var tg = o["target"] as? String ?? ""
+            if tool == "Bash" { tg = Eta.bash(o["command"] as? String ?? tg) }
+            return Perm(tool: tool, target: tg, path: p)
+        }
+        return nil
+    }
+    @ObservationIgnored private var flashes: [String: (String, Date)] = [:]
+    func reply(_ j: Job, _ verb: String) {
+        guard let p = j.perm else { return }
+        let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied") : ("always", "allowed")
+        try? body.write(toFile: p.path + ".reply", atomically: true, encoding: .utf8)
+        flashes[j.id] = (label, Date().addingTimeInterval(3))
+        refresh()
+    }
+    private func ev(_ sid: String?) -> Ev { sid.flatMap { evBySid[$0] } ?? Ev() }
+    private static let inputTypes: Set<String> = ["idle_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog"]
+
+    var running: Int { jobs.filter { $0.state == "working" || $0.needsYou }.count }
     var dotKind: String {
-        if jobs.contains(where: { $0.state == "blocked" }) { return "blocked" }
+        if jobs.contains(where: { $0.needsYou }) { return "blocked" }
         if jobs.contains(where: { $0.state == "failed" }) { return "failed" }
         return running > 0 ? "working" : "idle"
     }
     var summary: String {
-        let b = jobs.filter { $0.state == "blocked" }.count, w = jobs.filter { $0.state == "working" }.count
+        let b = jobs.filter { $0.needsYou }.count, w = jobs.filter { $0.state == "working" }.count
         var p: [String] = []
         if b > 0 { p.append("\(b) needs you") }
         if w > 0 { p.append("\(w) running") }
@@ -160,6 +196,8 @@ private struct SessionFile: Decodable {
         }
 
         tailEvents(home + "/.claude/notch-events")
+        let permDir = home + "/.claude/notch-events/perm"
+        flashes = flashes.filter { $0.value.1 > now }
         var rows: [Job] = []
         var rowIDs = Set<String>(), known = Set<String>()
         let jd = home + "/.claude/jobs"
@@ -172,6 +210,7 @@ private struct SessionFile: Decodable {
             if let sess {
                 if sess.status == "busy" { st = "working" } else if sess.status == "waiting" { st = "blocked" }
             }
+            let busy = sess?.status == "busy"
             let last = max(updated.timeIntervalSince1970, sess?.at ?? 0)
             let age = now.timeIntervalSince1970 - last
             let show = (st == "working" && age < 900) || (st == "blocked" && age < 7200)
@@ -179,7 +218,9 @@ private struct SessionFile: Decodable {
             guard show else { continue }
             let detail = f.detail?.s ?? ""
             let newest = (f.fan ?? []).max { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }?.label ?? ""
-            let text = detail.isEmpty ? newest : detail
+            let lastMsg = ev(f.sessionId).last
+            let lastSentence = lastMsg.split(whereSeparator: { ".!?\n".contains($0) }).first.map { Eta.clean(String($0), 12) } ?? ""
+            let text = detail.isEmpty ? (newest.isEmpty ? lastSentence : newest) : detail
             let override = st == "working" && f.state != "working"
             if override { if startDetail[d] == nil { startDetail[d] = detail } } else { startDetail[d] = nil }
             let starting = override && startDetail[d] == detail
@@ -198,6 +239,12 @@ private struct SessionFile: Decodable {
                     ask = haiku.get(d, src) ?? ask
                 }
             }
+            let e = ev(f.sessionId), perm = pendingPerm(f.sessionId, permDir)
+            let fl = flashes[d].map { $0.0 } ?? ""
+            if perm != nil { st = "approval" }
+            else if !busy && Store.inputTypes.contains(e.ntype) { st = "input" }
+            else if e.compacting { st = "compacting" }
+            else if st == "blocked" { st = "input" }
             rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: st, phase: phase,
                             pct: starting ? 5 : Eta.pct(phase: phase, detail: detail),
                             ask: ask, project: Eta.base(f.cwd), doing: doing,
@@ -206,7 +253,7 @@ private struct SessionFile: Decodable {
                             tool: f.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
                             ctxPct: ctxPct(f.sessionId, home),
                             compacting: f.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: f.sessionId.flatMap { evBySid[$0]?.ntype } ?? ""))
+                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: fl))
             rowIDs.insert(d)
         }
 
@@ -221,18 +268,23 @@ private struct SessionFile: Decodable {
             if let sid = s.sessionId, Eta.hashLike(s.name ?? "") {
                 if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
             }
-            rows.append(Job(id: "s\(pid)", title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: s.status == "waiting" ? "blocked" : "working", phase: s.status == "waiting" ? "blocked" : "working",
+            let e = ev(s.sessionId), perm = pendingPerm(s.sessionId, permDir), jid = "s\(pid)"
+            var st = s.status == "waiting" ? "input" : "working"
+            if perm != nil { st = "approval" }
+            else if s.status != "busy" && Store.inputTypes.contains(e.ntype) { st = "input" }
+            else if e.compacting { st = "compacting" }
+            rows.append(Job(id: jid, title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: st, phase: s.status == "waiting" ? "blocked" : "working",
                             pct: 50, ask: "", project: Eta.base(cwd),
                             tool: s.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
                             ctxPct: ctxPct(s.sessionId, home),
                             compacting: s.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: s.sessionId.flatMap { evBySid[$0]?.ntype } ?? ""))
+                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: flashes[jid].map { $0.0 } ?? ""))
         }
 
-        func w(_ j: Job) -> Int { j.state == "blocked" ? 0 : j.state == "working" ? 1 : 2 }
+        func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
         rows.sort { (w($0), $0.id) < (w($1), $1.id) }
         for j in rows where lastState[j.id] != j.state {
-            let snd = j.state == "blocked" ? "Ping" : j.state == "done" ? "Glass" : j.state == "failed" ? "Basso" : nil
+            let snd = j.needsYou ? "Ping" : j.state == "done" ? "Glass" : j.state == "failed" ? "Basso" : nil
             if seeded, let snd {
                 NSSound(named: snd)?.play()
                 popUntil = now + 4; popID = j.id

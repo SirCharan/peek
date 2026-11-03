@@ -19,6 +19,20 @@ enum Eta {
         return (n, t)
     }
 
+    /// FNV-1a over UTF8 → stable hue 0...1.
+    static func hue(_ s: String) -> Double {
+        var h: UInt32 = 2166136261
+        for b in s.utf8 { h = (h ^ UInt32(b)) &* 16777619 }
+        return Double(h % 360) / 360
+    }
+
+    /// Bash label: drop leading `cd <path> && ` / `cd <path>; `, collapse whitespace, cap at 48.
+    static func bash(_ c: String) -> String {
+        var t = c
+        while let m = t.firstMatch(of: /^\s*cd\s+\S+\s*(?:&&|;)\s*/) { t = String(t[m.range.upperBound...]) }
+        return String(t.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(48))
+    }
+
     static func hashLike(_ s: String) -> Bool { s.isEmpty || s.wholeMatch(of: /[0-9a-f]{8}/) != nil }
     static func base(_ cwd: String?) -> String {
         guard let c = cwd, !c.isEmpty else { return "" }
