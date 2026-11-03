@@ -18,7 +18,16 @@ MS=${META%% *}; EV=${META#* }
 if [ "$EV" = "PermissionRequest" ]; then
   P="$D/perm/$SID-$MS"
   printf '%s' "$IN" | jq -c '{session_id, tool_name, target:((.tool_input // {}) as $i | if ($i.file_path // "") != "" then ($i.file_path|split("/")|last) else (($i.command // "")|gsub("\n";" ")|.[0:60]) end),
-    command:(.tool_input.command // null), file_path:(.tool_input.file_path // null), suggestions:(.permission_suggestions // [])}' > "$P.json.tmp" && mv "$P.json.tmp" "$P.json"
+    command:(.tool_input.command // null), file_path:(.tool_input.file_path // null),
+    input:((.tool_input // {}) as $i | .tool_name as $t
+      | if $t == "Bash" then {command:(($i.command // "")[0:200])}
+        elif ($t == "Edit" or $t == "Write" or $t == "Read" or $t == "NotebookEdit") then {file_path:($i.file_path // $i.notebook_path // "")}
+        elif $t == "WebFetch" then {url:($i.url // "")}
+        elif $t == "WebSearch" then {query:($i.query // "")}
+        elif ($t == "Agent" or $t == "Task") then {description:($i.description // "")}
+        elif ($t | startswith("mcp__")) then {tool_name:$t}
+        else {} end),
+    suggestions:(.permission_suggestions // [])}' > "$P.json.tmp" && mv "$P.json.tmp" "$P.json"
   i=0
   while [ $i -lt 550 ]; do
     if [ -f "$P.reply" ]; then

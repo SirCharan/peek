@@ -10,9 +10,9 @@ enum Layout {
     static let wing: CGFloat = 72
 
     static func bandW(_ g: Geo) -> CGFloat { g.notchW + 2 * wing }
-    static func cardW(_ g: Geo) -> CGFloat { max(380, g.notchW + 144) }
+    static func cardW(_ g: Geo) -> CGFloat { max(440, g.notchW + 144) }
 
-    static func h(_ j: Job, replying: String? = nil) -> CGFloat { (j.state == "approval" && j.flash.isEmpty) || (j.state == "input" && replying == j.id) ? 52 : rowH }
+    static func h(_ j: Job, replying: String? = nil) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? (j.perm?.tall == true ? 64 : 52) : (j.state == "input" && replying == j.id) ? 52 : rowH }
     static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil) -> CGFloat {
         let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) }
         return g.notchH + body + 10
@@ -56,19 +56,22 @@ struct ApprovalButtons: View {
     let job: Job
     let store: Store
     var body: some View {
+        let p = job.perm
         HStack(spacing: 6) {
-            Button { store.reply(job, "allow") } label: {
-                Text("Allow").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
+            Button { store.reply(job, p?.tool == "AskUserQuestion" ? "open" : "allow") } label: {
+                Text(p?.allowLabel ?? "Allow").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
                     .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber)).contentShape(Capsule())
             }.buttonStyle(.plain)
             Button { store.reply(job, "deny") } label: {
-                Text("Deny").font(.system(size: 11)).foregroundStyle(.white)
+                Text(p?.denyLabel ?? "Deny").font(.system(size: 11)).foregroundStyle(.white)
                     .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(.white.opacity(0.2))).contentShape(Capsule())
             }.buttonStyle(.plain)
-            Button { store.reply(job, "always") } label: {
-                Text("Always").font(.system(size: 11)).foregroundStyle(amber)
-                    .padding(.horizontal, 4).frame(height: 20).contentShape(Rectangle())
-            }.buttonStyle(.plain)
+            if p?.allowAlways ?? true {
+                Button { store.reply(job, "always") } label: {
+                    Text("Always").font(.system(size: 11)).foregroundStyle(amber)
+                        .padding(.horizontal, 4).frame(height: 20).contentShape(Rectangle())
+                }.buttonStyle(.plain).help(p?.always ?? "")
+            }
         }.fixedSize()
     }
 }
@@ -83,7 +86,7 @@ struct RowView: View {
         if !job.flash.isEmpty { return Text(job.flash).foregroundStyle(dim) }
         switch job.state {
         case "done", "failed": return Text(job.state).foregroundStyle(dim)
-        case "approval": return Text("wants to run").foregroundStyle(dim)
+        case "approval": return Text(job.perm?.headline ?? "wants to run").foregroundStyle(dim)
         case "input":
             let a = job.ask2.isEmpty ? job.ask : job.ask2
             return Text(a.isEmpty ? "needs you" : "needs you · \(a)").foregroundStyle(amber)
@@ -93,7 +96,7 @@ struct RowView: View {
         var s: String
         if !job.tool.isEmpty { s = job.doing.isEmpty ? job.tool : "\(job.tool) · \(job.doing)" }
         else { s = job.doing.isEmpty ? job.phase : "\(job.phase) · \(job.doing)" }
-        if job.agents > 0 { s += " · \(job.agents) agent\(job.agents == 1 ? "" : "s")" }
+        if job.agents > 0 && s.count <= 40 { s += " · \(job.agents) agent\(job.agents == 1 ? "" : "s")" }
         return Text(s).foregroundStyle(dim) + Text(job.stuck ? " · stuck" : "").foregroundStyle(amber)
     }
 
@@ -113,7 +116,7 @@ struct RowView: View {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
                 Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .lineLimit(1).frame(width: 96, alignment: .leading)
+                    .lineLimit(1).frame(width: 90, alignment: .leading)
                 phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if job.state == "input" {
@@ -189,18 +192,18 @@ struct RowView: View {
                 Spacer(minLength: 0)
             }.frame(height: 18)
             HStack(spacing: 8) {
-                Text([p?.tool == "Bash" ? "" : p?.tool, p?.target].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "))
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                Text(p?.detail ?? "")
+                    .font(.system(size: 11, design: (p?.mono ?? false) ? .monospaced : .default)).foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(p?.tall == true ? 2 : 1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
                 ApprovalButtons(job: job, store: store)
-            }.frame(height: 30)
+            }.frame(height: p?.tall == true ? 42 : 30)
             GeometryReader { g in
                 Capsule().fill(.white.opacity(0.12))
                     .overlay(alignment: .leading) { Capsule().fill(bar).frame(width: g.size.width * frac) }
             }.frame(height: 2)
         }
         .padding(.horizontal, 14)
-        .frame(height: 52)
+        .frame(height: p?.tall == true ? 64 : 52)
     }
 }
 

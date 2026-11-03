@@ -24,7 +24,12 @@ struct Job: Identifiable, Equatable, Sendable {
     var needsYou: Bool { state == "approval" || state == "input" }
 }
 
-struct Perm: Equatable, Sendable { var tool: String; var target: String; var path: String }
+struct Perm: Equatable, Sendable {
+    var tool: String; var target: String; var path: String
+    var headline = "", detail = "", allowAlways = true, allowLabel = "Allow", denyLabel = "Deny", always = ""
+    var mono: Bool { tool == "Bash" || ["Edit", "Write", "NotebookEdit", "Read"].contains(tool) }
+    var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
+}
 
 private struct Ev { var tool = "", ntype = "", msg = "", last = "", compacting = false }
 
@@ -157,13 +162,17 @@ private struct SessionFile: Decodable {
             let tool = o["tool_name"] as? String ?? "tool"
             var tg = o["target"] as? String ?? ""
             if tool == "Bash" { tg = Eta.bash(o["command"] as? String ?? tg) }
-            return Perm(tool: tool, target: tg, path: p)
+            let a = Eta.approval(tool, o["input"] as? [String: Any] ?? ["command": o["command"] ?? "", "file_path": o["file_path"] ?? ""])
+            let w = ((o["command"] as? String ?? "").split(separator: " ").first).map(String.init) ?? ""
+            return Perm(tool: tool, target: tg, path: p, headline: a.headline, detail: a.detail, allowAlways: a.allowAlways,
+                        allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: tool == "Bash" && !w.isEmpty ? "always allow \(w)" : "always allow \(tool)")
         }
         return nil
     }
     @ObservationIgnored private var flashes: [String: (String, Date)] = [:]
     func reply(_ j: Job, _ verb: String) {
         guard let p = j.perm else { return }
+        if verb == "open" { Focus.jump(j, store: self); return }
         let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied") : ("always", "allowed")
         try? body.write(toFile: String(p.path.dropLast(5)) + ".reply", atomically: true, encoding: .utf8)
         flashes[j.id] = (label, Date().addingTimeInterval(3))

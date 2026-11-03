@@ -33,6 +33,44 @@ enum Eta {
         return String(t.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(48))
     }
 
+    typealias Approval = (headline: String, detail: String, allowAlways: Bool, allowLabel: String, denyLabel: String)
+
+    /// Human wording for a pending permission request.
+    static func approval(_ tool: String, _ input: [String: Any]) -> Approval {
+        func s(_ k: String) -> String { input[k] as? String ?? "" }
+        func name(_ p: String) -> String { (p as NSString).lastPathComponent }
+        switch tool {
+        case "ExitPlanMode": return ("asks you to approve its plan", planPreview(), false, "Approve plan", "Reject")
+        case "AskUserQuestion": return ("has a question for you", "", false, "Open", "Dismiss")
+        case "Bash": return ("wants to run", bash(s("command")), true, "Allow", "Deny")
+        case "Edit", "Write", "NotebookEdit": return ("wants to edit", name(s("file_path")), true, "Allow", "Deny")
+        case "Read": return ("wants to read", name(s("file_path")), true, "Allow", "Deny")
+        case "WebFetch", "WebSearch":
+            let u = s("url"), q = s("query")
+            return ("wants to fetch", u.isEmpty ? q : (URL(string: u)?.host ?? u), true, "Allow", "Deny")
+        case "Agent", "Task": return ("wants to start an agent", s("description"), true, "Allow", "Deny")
+        default:
+            let parts = tool.components(separatedBy: "__")
+            if tool.hasPrefix("mcp__"), parts.count >= 3 { return ("wants to use \(parts[1])", parts[2...].joined(separator: "__"), true, "Allow", "Deny") }
+            return ("wants to use \(tool)", "", true, "Allow", "Deny")
+        }
+    }
+
+    /// First 3 non-empty lines after the H1 of the newest plan file touched in the last 15 min.
+    static func planPreview() -> String {
+        let fm = FileManager.default
+        let dir = NSHomeDirectory() + "/.claude/plans"
+        let files = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".md") }.compactMap { n -> (String, Date)? in
+            guard let m = (try? fm.attributesOfItem(atPath: "\(dir)/\(n)"))?[.modificationDate] as? Date, Date().timeIntervalSince(m) < 900 else { return nil }
+            return ("\(dir)/\(n)", m)
+        }
+        guard let f = files.max(by: { $0.1 < $1.1 })?.0, let t = try? String(contentsOfFile: f, encoding: .utf8) else { return "(plan file not found)" }
+        var lines = t.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        if let i = lines.firstIndex(where: { $0.hasPrefix("# ") }) { lines = Array(lines[(i + 1)...]) }
+        let p = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }.prefix(3).joined(separator: " · ")
+        return p.isEmpty ? "(plan file not found)" : String(p.prefix(160))
+    }
+
     static func hashLike(_ s: String) -> Bool { s.isEmpty || s.wholeMatch(of: /[0-9a-f]{8}/) != nil }
     static func base(_ cwd: String?) -> String {
         guard let c = cwd, !c.isEmpty else { return "" }
