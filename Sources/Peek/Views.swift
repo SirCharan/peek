@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import PeekCore
 
 struct Geo: Equatable, Sendable { var notchW: CGFloat; var notchH: CGFloat }
 
@@ -12,7 +13,11 @@ enum Layout {
     static func bandW(_ g: Geo) -> CGFloat { g.notchW + 2 * wing }
     static func cardW(_ g: Geo) -> CGFloat { max(440, g.notchW + 144) }
 
-    static func h(_ j: Job, replying: String? = nil) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? (j.perm?.tall == true ? 64 : 52) : (j.state == "input" && replying == j.id) ? 52 : rowH }
+    /// Question card: header row + per question (title 34, options 24 each, Other 26, gap 6) + footer, capped (it scrolls past the cap).
+    static func askH(_ a: AskQuestion) -> CGFloat {
+        min(520, 22 + a.questions.reduce(0) { $0 + 66 + 24 * CGFloat($1.options.count) } + 38)
+    }
+    static func h(_ j: Job, replying: String? = nil) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? (j.perm?.ask.map(askH) ?? (j.perm?.tall == true ? 64 : 52)) : (j.state == "input" && replying == j.id) ? 52 : rowH }
     static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil) -> CGFloat {
         let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) }
         return g.notchH + body + 10
@@ -52,17 +57,36 @@ struct StateDot: View {
     }
 }
 
+@MainActor var notchPanel: NSWindow? { NSApp.windows.first { $0 is NSPanel && $0.level == .statusBar } }
+
 struct ApprovalButtons: View {
     let job: Job
     let store: Store
+    @Binding var denying: Bool
+    @State private var reason = ""
+    @FocusState private var focus: Bool
+    private func endDeny() { denying = false; notchPanel?.resignKey() }
     var body: some View {
         let p = job.perm
+        if denying {
+            HStack(spacing: 8) {
+                TextField("Reason (Enter to deny)", text: $reason).textFieldStyle(.plain).font(.system(size: 11)).foregroundStyle(.white)
+                    .padding(.horizontal, 8).frame(height: 22)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.12)))
+                    .focused($focus)
+                    .onSubmit {
+                        let t = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                        store.reply(job, t.isEmpty ? "deny" : "deny:" + t)
+                    }
+                    .onExitCommand { endDeny() }
+            }.onAppear { reason = ""; notchPanel?.makeKey(); focus = true }
+        } else {
         HStack(spacing: 6) {
             Button { store.reply(job, p?.tool == "AskUserQuestion" ? "open" : "allow") } label: {
                 Text(p?.allowLabel ?? "Allow").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
                     .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber)).contentShape(Capsule())
             }.buttonStyle(.plain)
-            Button { store.reply(job, "deny") } label: {
+            Button { denying = true } label: {
                 Text(p?.denyLabel ?? "Deny").font(.system(size: 11)).foregroundStyle(.white)
                     .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(.white.opacity(0.2))).contentShape(Capsule())
             }.buttonStyle(.plain)
@@ -73,6 +97,7 @@ struct ApprovalButtons: View {
                 }.buttonStyle(.plain).help(p?.always ?? "")
             }
         }.fixedSize()
+        }
     }
 }
 
@@ -109,7 +134,8 @@ struct RowView: View {
             return (b, job.state == "done" || job.state == "failed" ? 1 : CGFloat(min(max(job.pct, 0), 100)) / 100)
         }()
         Group {
-        if job.state == "approval", job.flash.isEmpty { approval(bar: bar, frac: frac) }
+        if job.state == "approval", job.flash.isEmpty, let a = job.perm?.ask { QuestionCard(job: job, ask: a, store: store, alerting: alerting) }
+        else if job.state == "approval", job.flash.isEmpty { approval(bar: bar, frac: frac) }
         else if job.state == "input", store.replying == job.id { replyRow(bar: bar, frac: frac) }
         else {
         VStack(spacing: 0) {
@@ -144,7 +170,8 @@ struct RowView: View {
     @State private var hasTab = true
     @State private var text = ""
     @FocusState private var fieldFocus: Bool
-    var panel: NSWindow? { NSApp.windows.first { $0 is NSPanel && $0.level == .statusBar } }
+    @State private var denying = false
+    var panel: NSWindow? { notchPanel }
 
     private func startReply() {
         text = ""; store.replying = job.id
@@ -192,10 +219,12 @@ struct RowView: View {
                 Spacer(minLength: 0)
             }.frame(height: 18)
             HStack(spacing: 8) {
-                Text(p?.detail ?? "")
-                    .font(.system(size: 11, design: (p?.mono ?? false) ? .monospaced : .default)).foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(p?.tall == true ? 2 : 1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
-                ApprovalButtons(job: job, store: store)
+                if !denying {
+                    Text(p?.detail ?? "")
+                        .font(.system(size: 11, design: (p?.mono ?? false) ? .monospaced : .default)).foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(p?.tall == true ? 2 : 1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ApprovalButtons(job: job, store: store, denying: $denying)
             }.frame(height: p?.tall == true ? 42 : 30)
             GeometryReader { g in
                 Capsule().fill(.white.opacity(0.12))
@@ -204,6 +233,105 @@ struct RowView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: p?.tall == true ? 64 : 52)
+    }
+}
+
+/// AskUserQuestion held by `peek-hook --ask`: 1-4 questions, single or multi select, a free-text Other line, Submit, or hand back to the terminal.
+struct QuestionCard: View {
+    let job: Job
+    let ask: AskQuestion
+    let store: Store
+    let alerting: Bool
+    @State private var picked: [[String]]
+    @State private var other: [String]
+    @FocusState private var focus: Int?
+
+    init(job: Job, ask: AskQuestion, store: Store, alerting: Bool) {
+        self.job = job; self.ask = ask; self.store = store; self.alerting = alerting
+        _picked = State(initialValue: Array(repeating: [], count: ask.questions.count))
+        _other = State(initialValue: Array(repeating: "", count: ask.questions.count))
+    }
+
+    /// Labels chosen for question i: the Other text counts as an extra label (single-select: it replaces the pick).
+    private func selection(_ i: Int) -> [String] {
+        let o = other[i].trimmingCharacters(in: .whitespacesAndNewlines)
+        if o.isEmpty { return picked[i] }
+        return ask.questions[i].multiSelect ? picked[i] + [o] : [o]
+    }
+    private var complete: Bool { ask.questions.indices.allSatisfy { !selection($0).isEmpty } }
+
+    private func toggle(_ i: Int, _ label: String) {
+        if ask.questions[i].multiSelect {
+            if let k = picked[i].firstIndex(of: label) { picked[i].remove(at: k) } else { picked[i].append(label) }
+        } else {
+            picked[i] = [label]; other[i] = ""
+        }
+    }
+    private func submit() {
+        let sel = ask.questions.indices.map(selection)
+        let a = AskQuestion.buildAnswers(questions: ask.questions, selections: sel)
+        guard complete, let d = try? JSONSerialization.data(withJSONObject: a), let j = String(data: d, encoding: .utf8) else { return }
+        notchPanel?.resignKey()
+        store.reply(job, j)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                StateDot(job: job, alerting: alerting)
+                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text("has a question for you").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                Spacer(minLength: 0)
+            }.frame(height: 22)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(ask.questions.indices, id: \.self) { i in questionView(i) }
+                }
+            }
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Button { notchPanel?.resignKey(); store.reply(job, "open") } label: {
+                    Text("Reply in terminal").font(.system(size: 11)).foregroundStyle(.white)
+                        .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(.white.opacity(0.2))).contentShape(Capsule())
+                }.buttonStyle(.plain)
+                Button { submit() } label: {
+                    Text("Submit").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber.opacity(complete ? 1 : 0.35))).contentShape(Capsule())
+                }.buttonStyle(.plain).disabled(!complete)
+            }.frame(height: 38)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: Layout.askH(ask))
+    }
+
+    private func questionView(_ i: Int) -> some View {
+        let q = ask.questions[i]
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(q.header.isEmpty ? q.question : "\(q.header.uppercased()) · \(q.question)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(2).frame(height: 34, alignment: .leading)
+            ForEach(q.options.indices, id: \.self) { k in
+                let o = q.options[k], on = picked[i].contains(o.label)
+                Button { toggle(i, o.label) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: q.multiSelect ? (on ? "checkmark.square.fill" : "square") : (on ? "circle.inset.filled" : "circle"))
+                            .font(.system(size: 11)).foregroundStyle(on ? amber : .white.opacity(0.5))
+                        Text(o.label).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                        Text(o.description).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }.frame(height: 24).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }
+            TextField("Other…", text: $other[i]).textFieldStyle(.plain).font(.system(size: 11)).foregroundStyle(.white)
+                .padding(.horizontal, 8).frame(height: 22)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.12)))
+                .focused($focus, equals: i)
+                .simultaneousGesture(TapGesture().onEnded { notchPanel?.makeKey() })  // typing needs the panel to be key
+                .onChange(of: other[i]) { _, v in if !q.multiSelect && !v.isEmpty { picked[i] = [] } }
+                .onSubmit { submit() }
+                .onExitCommand { focus = nil; notchPanel?.resignKey() }
+                .frame(height: 26, alignment: .top)
+            Color.clear.frame(height: 6)
+        }
     }
 }
 

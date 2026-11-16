@@ -7,7 +7,6 @@ public enum PeekPaths {
     public static var events: String { dir + "/events" }
     public static var status: String { dir + "/status" }
     public static var sock: String { dir + "/peek.sock" }
-    public static var always: String { dir + "/always.json" }
     public static var prevStatusline: String { dir + "/prev-statusline" }
 }
 
@@ -30,6 +29,7 @@ public enum Hook {
         var o: [String: Any] = [:]
         for k in ["file_path", "notebook_path", "pattern", "url", "query", "path"] { if let s = i[k] as? String { o[k] = cap(s, 300) } }
         for k in ["command", "description"] { if let s = i[k] as? String { o[k] = cap(s, 120) } }
+        if tool == "AskUserQuestion", let q = i["questions"], let d = try? JSONSerialization.data(withJSONObject: q), d.count < 16_000 { o["questions"] = q }
         guard ["Edit", "Write", "MultiEdit"].contains(tool) else { return o }
         for k in ["old_string", "new_string", "content"] { if let s = i[k] as? String { o[k] = capBytes(s, bigCap) } }
         if let es = i["edits"] as? [[String: Any]] {
@@ -70,33 +70,44 @@ public enum Hook {
         return String(decoding: d, as: UTF8.self)
     }
 
+    /// The one permission suggestion that "Always" applies: the first allow-rule (else the first mode change), echoed verbatim
+    /// as `updatedPermissions`. `label` is a short description for the button tooltip. nil = no Always for this request.
+    public static func always(_ suggestions: [[String: Any]]) -> (update: [String: Any], label: String)? {
+        let pick = suggestions.first { $0["type"] as? String == "addRules" && $0["behavior"] as? String == "allow" }
+            ?? suggestions.first { $0["type"] as? String == "setMode" }
+        guard let u = pick else { return nil }
+        if u["type"] as? String == "setMode" { return (u, "switch to \(u["mode"] as? String ?? "?") mode") }
+        let rules = (u["rules"] as? [[String: Any]] ?? []).compactMap { r -> String? in
+            guard let t = r["toolName"] as? String else { return nil }
+            return (r["ruleContent"] as? String).map { "\(t)(\($0))" } ?? t
+        }
+        guard !rules.isEmpty else { return nil }
+        return (u, "always allow " + rules.joined(separator: ", "))
+    }
+
     /// Reply verbs: `allow`, `always`, `deny` or `deny:<reason>`. nil = no decision (Claude Code shows its own dialog).
-    public static func decision(_ reply: String) -> String? {
-        let head = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"#
+    /// `always` becomes allow plus `updatedPermissions` (only when `always` is given, else a plain allow).
+    /// ExitPlanMode and AskUserQuestion need `updatedInput` with an allow, so the original input is echoed.
+    public static func decision(_ reply: String, tool: String = "", rawInput: [String: Any] = [:], always: [String: Any]? = nil) -> String? {
+        var d: [String: Any]
         switch reply {
-        case "allow", "always": return head + #""behavior":"allow"}}}"#
+        case "allow", "always":
+            d = ["behavior": "allow"]
+            if tool == "ExitPlanMode" || tool == "AskUserQuestion" { d["updatedInput"] = rawInput }
+            if reply == "always", let always { d["updatedPermissions"] = [always] }
         case _ where reply == "deny" || reply.hasPrefix("deny:"):
-            var m = reply.hasPrefix("deny:") ? String(reply.dropFirst(5)) : ""
-            if m.isEmpty { m = "Denied from the notch" }
-            guard let d = try? JSONSerialization.data(withJSONObject: m, options: .fragmentsAllowed) else { return nil }
-            return head + #""behavior":"deny","message":"# + String(decoding: d, as: UTF8.self) + "}}}"
+            let m = reply.hasPrefix("deny:") ? String(reply.dropFirst(5)) : ""
+            d = ["behavior": "deny", "message": m.isEmpty ? "Denied from the notch" : m]
         default: return nil
         }
+        return line(["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": d]])
     }
 
-    // MARK: always-allow rules ("Bash:git", "Read", "mcp__x__y")
-
-    static let shellMeta: Set<Character> = [";", "&", "|", "`", "$", "(", ")", "<", ">", "\n"]
-
-    public static func alwaysKey(tool: String, input: [String: Any]) -> String {
-        guard tool == "Bash", let w = (input["command"] as? String)?.split(separator: " ").first else { return tool }
-        return "Bash:\(w)"
-    }
-
-    /// A Bash rule only matches a simple command (no chaining, pipes or substitution).
-    public static func isAlways(_ rules: [String], tool: String, input: [String: Any]) -> Bool {
-        if tool == "Bash", let c = input["command"] as? String, c.contains(where: { shellMeta.contains($0) }) { return false }
-        return rules.contains(alwaysKey(tool: tool, input: input))
+    /// `--ask` output: allow the AskUserQuestion call with the original questions plus the answers the app sent.
+    public static func askOutput(questions: [[String: Any]], reply: String) -> String? {
+        guard let a = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any], !a.isEmpty else { return nil }
+        return line(["hookSpecificOutput": ["hookEventName": "PreToolUse", "permissionDecision": "allow",
+                                            "updatedInput": ["questions": questions, "answers": a]]])
     }
 
     /// Statusline stdin -> the small record the app reads from `~/.peek/status/<sid>.json`.

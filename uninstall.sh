@@ -37,5 +37,5 @@ PY
     echo "settings.json: Peek entries removed (file changed since install, so edited in place)"
   fi
 fi
-rm -rf "$PEEK/bin" "$PEEK/prev-statusline" "$PEEK/settings-sha" "$PEEK/settings-backup" "$PEEK/peek.sock"
-echo "uninstalled $LABEL (kept $PEEK/events, status, always.json and the settings backup)"
+rm -rf "$PEEK/bin" "$PEEK/prev-statusline" "$PEEK/settings-sha" "$PEEK/settings-backup" "$PEEK/peek.sock" "$PEEK/always.json"
+echo "uninstalled $LABEL (kept $PEEK/events, status and the settings backup)"

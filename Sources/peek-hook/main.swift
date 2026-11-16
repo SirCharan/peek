@@ -42,22 +42,25 @@ if CommandLine.arguments.contains("--statusline") {
 let ppid = getppid()
 guard var ev = Hook.event(raw, pid: ppid, tty: "") else { exit(0) }
 
+// MARK: --ask (PreToolUse on AskUserQuestion): the app shows the questions; on any failure print nothing so the terminal asks.
+if CommandLine.arguments.contains("--ask") {
+    guard raw["tool_name"] as? String == "AskUserQuestion", let qs = (raw["tool_input"] as? [String: Any])?["questions"] as? [[String: Any]],
+          let fd = PeekSocket.connect(PeekPaths.sock, timeout: 0.3) else { exit(0) }
+    ev["ev"] = "AskUserQuestion"; ev["tty"] = tty(of: ppid)
+    guard let l = Hook.line(ev), PeekSocket.send(fd, l), let reply = PeekSocket.readLine(fd, timeout: 125),
+          let out = Hook.askOutput(questions: qs, reply: reply) else { exit(0) }
+    print(out)
+    exit(0)
+}
+
 // MARK: PermissionRequest: ask the app over the socket; on any failure print nothing so Claude Code asks itself.
 if ev["ev"] as? String == "PermissionRequest" {
-    let tool = ev["tool_name"] as? String ?? "", inp = ev["tool_input"] as? [String: Any] ?? [:]
-    var rules = ((try? Data(contentsOf: URL(fileURLWithPath: PeekPaths.always))).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String]) ?? []
-    if Hook.isAlways(rules, tool: tool, input: inp) { print(Hook.decision("allow")!); exit(0) }
     guard let fd = PeekSocket.connect(PeekPaths.sock, timeout: 0.3) else { exit(0) }
+    let always = Hook.always(raw["permission_suggestions"] as? [[String: Any]] ?? [])
+    if let always { ev["always"] = always.label }
     ev["tty"] = tty(of: ppid)
     guard let l = Hook.line(ev), PeekSocket.send(fd, l), let reply = PeekSocket.readLine(fd, timeout: 115),
-          let out = Hook.decision(reply) else { exit(0) }
-    if reply == "always" {
-        let k = Hook.alwaysKey(tool: tool, input: inp)
-        if !rules.contains(k) {
-            rules.append(k)
-            if let d = try? JSONSerialization.data(withJSONObject: rules) { writeAtomic(PeekPaths.always, d) }
-        }
-    }
+          let out = Hook.decision(reply, tool: ev["tool_name"] as? String ?? "", rawInput: raw["tool_input"] as? [String: Any] ?? [:], always: always?.update) else { exit(0) }
     print(out)
     exit(0)
 }

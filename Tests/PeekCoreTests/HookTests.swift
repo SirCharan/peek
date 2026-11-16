@@ -66,8 +66,8 @@ final class HookTests: XCTestCase {
     }
 
     func testDecisionJSON() throws {
-        XCTAssertEqual(Hook.decision("allow"), #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#)
-        XCTAssertEqual(Hook.decision("always"), Hook.decision("allow"))
+        XCTAssertEqual(Hook.decision("allow"), #"{"hookSpecificOutput":{"decision":{"behavior":"allow"},"hookEventName":"PermissionRequest"}}"#)
+        XCTAssertEqual(Hook.decision("always"), Hook.decision("allow"))  // no suggestion: always degrades to allow
         let d = try XCTUnwrap(Hook.decision(#"deny:no "rm" please"#))
         let o = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(d.utf8)) as? [String: Any])
         let dec = try XCTUnwrap((o["hookSpecificOutput"] as? [String: Any])?["decision"] as? [String: Any])
@@ -79,16 +79,33 @@ final class HookTests: XCTestCase {
         XCTAssertNil(Hook.decision("maybe"))
     }
 
-    func testAlwaysRules() {
-        XCTAssertEqual(Hook.alwaysKey(tool: "Bash", input: ["command": "git status"]), "Bash:git")
-        XCTAssertEqual(Hook.alwaysKey(tool: "Read", input: [:]), "Read")
-        let rules = ["Bash:git", "Read"]
-        XCTAssertTrue(Hook.isAlways(rules, tool: "Bash", input: ["command": "git status -s"]))
-        XCTAssertFalse(Hook.isAlways(rules, tool: "Bash", input: ["command": "git status && rm -rf x"]))
-        XCTAssertFalse(Hook.isAlways(rules, tool: "Bash", input: ["command": "git log | sh"]))
-        XCTAssertFalse(Hook.isAlways(rules, tool: "Bash", input: ["command": "ls"]))
-        XCTAssertTrue(Hook.isAlways(rules, tool: "Read", input: ["file_path": "/x"]))
-        XCTAssertFalse(Hook.isAlways(rules, tool: "Write", input: [:]))
+    func testAlwaysBecomesUpdatedPermissions() throws {
+        let sug: [[String: Any]] = [["type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "rm -rf node_modules"]], "behavior": "allow", "destination": "localSettings"]]
+        let a = try XCTUnwrap(Hook.always(sug))
+        XCTAssertEqual(a.label, "always allow Bash(rm -rf node_modules)")
+        let out = try XCTUnwrap(Hook.decision("always", tool: "Bash", rawInput: ["command": "x"], always: a.update))
+        let o = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any])
+        let h = try XCTUnwrap(o["hookSpecificOutput"] as? [String: Any])
+        XCTAssertEqual(h["hookEventName"] as? String, "PermissionRequest")
+        let d = try XCTUnwrap(h["decision"] as? NSDictionary)
+        XCTAssertEqual(d, ["behavior": "allow", "updatedPermissions": sug] as NSDictionary)  // echoed verbatim, no updatedInput for Bash
+        XCTAssertNil(Hook.always([]))
+        XCTAssertNil(Hook.always([["type": "addDirectories", "directories": ["/x"], "destination": "session"]]))
+        XCTAssertEqual(Hook.always([["type": "setMode", "mode": "acceptEdits", "destination": "session"]])?.label, "switch to acceptEdits mode")
+        XCTAssertEqual(Hook.always([["type": "addRules", "rules": [["toolName": "mcp__a__b"]], "behavior": "allow", "destination": "session"]])?.label, "always allow mcp__a__b")
+    }
+
+    func testPlanApprovalEchoesInput() throws {
+        let out = try XCTUnwrap(Hook.decision("allow", tool: "ExitPlanMode", rawInput: ["plan": "## P", "planFilePath": "/p.md"]))
+        let o = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any])
+        let d = try XCTUnwrap((o["hookSpecificOutput"] as? [String: Any])?["decision"] as? NSDictionary)
+        XCTAssertEqual(d, ["behavior": "allow", "updatedInput": ["plan": "## P", "planFilePath": "/p.md"]] as NSDictionary)
+    }
+
+    func testAskQuestionsKeptInTrimmedInput() throws {
+        let q: [[String: Any]] = [["question": "Q?", "header": "H", "options": [["label": "A", "description": "a"], ["label": "B", "description": "b"]], "multiSelect": false]]
+        let e = try XCTUnwrap(ev(["session_id": "a", "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": ["questions": q]]))
+        XCTAssertNotNil(AskQuestion.parse(toolInput: try XCTUnwrap(e["tool_input"] as? [String: Any])))
     }
 
     func testStatus() throws {

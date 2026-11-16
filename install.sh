@@ -52,6 +52,8 @@ for ev in ASYNC + ["PermissionRequest"]:
     if ev == "PermissionRequest": c["timeout"] = 120
     else: c.update({"timeout": 5, "async": True})
     h.setdefault(ev, []).append({"matcher": "", "hooks": [c]})
+# AskUserQuestion answered from the notch: blocking PreToolUse (the async PreToolUse group above only logs it)
+h.setdefault("PreToolUse", []).append({"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": HOOK + " --ask", "timeout": 130, "statusMessage": MARK}]})
 d["hooks"] = h
 if sl is not None and sl.get("command") == STATUS: pass
 elif sl is not None and "command" in sl:

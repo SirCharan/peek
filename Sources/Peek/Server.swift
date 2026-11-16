@@ -7,17 +7,21 @@ import PeekCore
 final class PermRequest: @unchecked Sendable {
     let id = UUID().uuidString
     let sid: String, tool: String, cwd: String, input: [String: Any]
+    /// Tooltip for the Always button ("" = the request carried no permission suggestion, so no Always).
+    var always = ""
+    /// Set for an AskUserQuestion held by `peek-hook --ask`; the answer is the answers dict as one JSON line.
+    var ask: AskQuestion?
     private let lock = NSLock()
     private var verb: String?
     init(sid: String, tool: String, cwd: String, input: [String: Any]) { self.sid = sid; self.tool = tool; self.cwd = cwd; self.input = input }
-    /// `allow` | `always` | `deny:<reason>`; "" = give up without answering.
+    /// `allow` | `always` | `deny:<reason>` | answers JSON (ask); "" = give up without answering.
     func answer(_ v: String) { lock.lock(); if verb == nil { verb = v }; lock.unlock() }
     fileprivate var answered: String? { lock.lock(); defer { lock.unlock() }; return verb }
 }
 
 /// Unix-domain socket listener at ~/.peek/peek.sock. A nudge triggers a refresh; a PermissionRequest is held until answered.
 final class Server: @unchecked Sendable {
-    static let maxConnections = 32, maxPayload = 1 << 20, holdSeconds = 110.0
+    static let maxConnections = 32, maxPayload = 1 << 20, holdSeconds = 110.0, askHoldSeconds = 120.0
     private let onNudge: @Sendable () -> Void
     private let onPermission: @Sendable (PermRequest) -> Void
     private let onGone: @Sendable (String) -> Void
@@ -80,12 +84,18 @@ final class Server: @unchecked Sendable {
             if raw.count > Self.maxPayload { break }
         }
         guard let o = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
-              o["ev"] as? String == "PermissionRequest", let sid = Hook.safeSid(o["sid"]) else {
+              let ev = o["ev"] as? String, ev == "PermissionRequest" || ev == "AskUserQuestion", let sid = Hook.safeSid(o["sid"]) else {
             onNudge(); close(fd); return
         }
-        let req = PermRequest(sid: sid, tool: o["tool_name"] as? String ?? "tool", cwd: o["cwd"] as? String ?? "", input: o["tool_input"] as? [String: Any] ?? [:])
+        let input = o["tool_input"] as? [String: Any] ?? [:]
+        let req = PermRequest(sid: sid, tool: o["tool_name"] as? String ?? "tool", cwd: o["cwd"] as? String ?? "", input: input)
+        req.always = o["always"] as? String ?? ""
+        if ev == "AskUserQuestion" {
+            guard let q = AskQuestion.parse(toolInput: input) else { close(fd); return }  // malformed: hang up, the terminal asks
+            req.ask = q
+        }
         onPermission(req)
-        let deadline = Date().addingTimeInterval(Self.holdSeconds)
+        let deadline = Date().addingTimeInterval(ev == "AskUserQuestion" ? Self.askHoldSeconds : Self.holdSeconds)
         while Date() < deadline {
             if let v = req.answered {
                 if !v.isEmpty { _ = PeekSocket.send(fd, v) }

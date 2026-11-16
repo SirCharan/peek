@@ -28,6 +28,7 @@ struct Job: Identifiable, Equatable, Sendable {
 struct Perm: Equatable, Sendable {
     var id: String; var tool: String; var target: String
     var headline = "", detail = "", allowAlways = true, allowLabel = "Allow", denyLabel = "Deny", always = ""
+    var ask: AskQuestion?
     var mono: Bool { tool == "Bash" || ["Edit", "Write", "NotebookEdit", "Read"].contains(tool) }
     var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
 }
@@ -177,9 +178,8 @@ struct Perm: Equatable, Sendable {
 
     private static func perm(_ r: PermRequest) -> Perm {
         let a = Eta.approval(r.tool, r.input)
-        let w = ((r.input["command"] as? String ?? "").split(separator: " ").first).map(String.init) ?? ""
-        return Perm(id: r.id, tool: r.tool, target: Store.toolLabel(r.tool, r.input), headline: a.headline, detail: a.detail, allowAlways: a.allowAlways,
-                    allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: r.tool == "Bash" && !w.isEmpty ? "always allow \(w)" : "always allow \(r.tool)")
+        return Perm(id: r.id, tool: r.tool, target: Store.toolLabel(r.tool, r.input), headline: a.headline, detail: a.detail,
+                    allowAlways: a.allowAlways && !r.always.isEmpty, allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: r.always, ask: r.ask)
     }
 
     private func gone(_ id: String) {
@@ -199,7 +199,8 @@ struct Perm: Equatable, Sendable {
     func reply(_ j: Job, _ verb: String) {
         guard let p = j.perm, let r = pending[j.sid]?.first(where: { $0.id == p.id }) else { return }
         if verb == "open" { r.answer(""); Focus.jump(j, store: self); refresh(); return }  // hang up: Claude Code shows its own dialog
-        let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied") : ("always", "allowed")
+        let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied")
+            : verb.hasPrefix("deny:") ? (verb, "denied") : verb.hasPrefix("{") ? (verb, "answered") : ("always", "allowed")
         r.answer(body)
         pending[j.sid] = pending[j.sid]?.filter { $0.id != r.id }.nilIfEmpty
         flashes[j.id] = (label, Date().addingTimeInterval(3))
