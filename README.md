@@ -1,3 +1,12 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/lockup/peek-lockup-dark@2x.png">
+    <img src="design/lockup/peek-lockup-light@2x.png" alt="Peek: a winking pup peeking over a ledge, next to the word peek" width="420">
+  </picture>
+  <br>
+  <img src="design/mark/peek-blink.svg" alt="The Peek pup blinking" width="160">
+</p>
+
 # Peek
 
 A macOS notch overlay that shows your Claude Code sessions and lets you answer them without switching windows.
@@ -6,13 +15,13 @@ Peek never delays or replaces the terminal's own prompts: Claude Code asks in th
 
 *Peek sits in the notch, stays out of the way, and speaks up when Claude Code needs you.*
 
-![The Peek character in five states: idle, working, needs, done and failed](docs/states.png)
+![The Peek puppy in five states: idle, working, needs, done and failed](docs/states.png)
 
 ## What it shows and does
 
 - Sits in the MacBook notch, or in a small bar at the top of displays without one.
 - Stays invisible while no Claude Code session is running, and peeks out when you hover.
-- Shows a small one-eyed character. Its pupil follows your cursor and changes with the state of your sessions.
+- Shows a small winking pup peeking over the notch with its paws on the edge. Its open eye follows your cursor; its ears, eyes and the colour of the ledge change with the state of your sessions.
 - Expands into a card with one row per session: title, the current tool or latest edit (`file +N −M`), and context usage in percent.
 - Jumps to the session's terminal when you click its row.
 - Shows each permission request and multiple-choice question in the notch while the terminal shows it too. You can answer in either place, and the first answer counts.

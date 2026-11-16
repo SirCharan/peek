@@ -4,7 +4,8 @@ import PeekCore
 
 let mascotBody = Color(white: 0.92)
 
-/// One frame of the peeking dome in a 22x16 pt box; `scale` enlarges it. Pure drawing, no time or pointer.
+/// One frame of the winking pup in a 22x16 pt box; `scale` enlarges it. Pure drawing, no time or pointer.
+/// Shapes are the 512-unit mark scaled down (0.05 wide, 0.062 tall) with the face simplified for size.
 struct MascotArt: View {
     let pose: MascotPose
     let gaze: CGVector      // unit disk, y up
@@ -17,31 +18,65 @@ struct MascotArt: View {
             let ledge = accent ?? Color.white.opacity(0.25)
             ctx.fill(Path(CGRect(x: 0, y: 15, width: 22, height: 1)), with: .color(ledge))
             ctx.clip(to: Path(CGRect(x: 0, y: 0, width: 22, height: 15)))
-            let baseY = 15 + (1 - pose.lift) * 7
             ctx.translateBy(x: 0, y: -pose.hop)
-            ctx.translateBy(x: 11, y: baseY); ctx.rotate(by: .degrees(pose.tilt)); ctx.translateBy(x: -11, y: -baseY)
-            var dome = Path()
-            dome.move(to: CGPoint(x: 2, y: baseY))
-            dome.addArc(center: CGPoint(x: 11, y: baseY), radius: 9, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
-            dome.addLine(to: CGPoint(x: 2, y: baseY))
-            ctx.fill(dome.applying(CGAffineTransform(translationX: 0, y: baseY).scaledBy(x: 1, y: 11.0 / 9).translatedBy(x: 0, y: -baseY)), with: .color(mascotBody))
-            let cx = 11.0, cy = baseY - 5.2, rx = 5.2, ry = 3.4 * max(pose.open, 0)
-            if pose.happy > 0.5 {
-                var arc = Path(); arc.move(to: CGPoint(x: cx - 4, y: cy + 1.4))
-                arc.addQuadCurve(to: CGPoint(x: cx + 4, y: cy + 1.4), control: CGPoint(x: cx, y: cy - 3.6))
-                ctx.stroke(arc, with: .color(.black), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-            } else if ry < 0.7 {
-                var l = Path(); l.move(to: CGPoint(x: cx - 4.2, y: cy)); l.addLine(to: CGPoint(x: cx + 4.2, y: cy))
-                ctx.stroke(l, with: .color(.black), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-            } else {
-                let eye = Path(ellipseIn: CGRect(x: cx - rx, y: cy - ry, width: 2 * rx, height: 2 * ry))
-                ctx.fill(eye, with: .color(.black))
-                ctx.clip(to: eye)
-                let g = pose.sweep.map { CGVector(dx: $0, dy: 0) } ?? gaze
-                let pr = 1.9
-                let px = cx + g.dx * (rx - pr - 0.2), py = cy - g.dy * max(0, ry - pr + 0.6)
-                ctx.fill(Path(ellipseIn: CGRect(x: px - pr, y: py - pr, width: 2 * pr, height: 2 * pr)), with: .color(accent ?? mascotBody))
+            let baseY = 15 + (1 - pose.lift) * 7
+            // Mark coordinates (x 256 = centre, y 364 = ledge) to points; `flip` mirrors for the right side.
+            func m(_ x: Double, _ y: Double, _ flip: Bool = false) -> CGPoint {
+                CGPoint(x: 11 + (flip ? -1 : 1) * (x - 256) * 0.05, y: baseY + (y - 364) * 0.062)
             }
+            var head = ctx
+            head.translateBy(x: 11, y: baseY); head.rotate(by: .degrees(pose.tilt)); head.translateBy(x: -11, y: -baseY)
+            let earFill = Color(white: 0.2), earLine = Color(white: 0.92)
+            for flip in [false, true] {
+                var ear = Path()
+                ear.move(to: m(178, 194, flip))
+                ear.addCurve(to: m(82, 262, flip), control1: m(140, 174, flip), control2: m(94, 206, flip))
+                ear.addCurve(to: m(104, 342, flip), control1: m(74, 302, flip), control2: m(80, 340, flip))
+                ear.addCurve(to: m(168, 262, flip), control1: m(130, 344, flip), control2: m(150, 302, flip))
+                ear.closeSubpath()
+                let pv = m(176, 200, flip), a = Angle.degrees(pose.ear * (pose.ear < 0 ? 14 : 15) * (flip ? -1 : 1)).radians
+                let t = CGAffineTransform(translationX: pv.x, y: pv.y + max(0, -pose.ear) * 1.4).rotated(by: a).translatedBy(x: -pv.x, y: -pv.y)
+                head.fill(ear.applying(t), with: .color(earFill))
+                head.stroke(ear.applying(t), with: .color(earLine), style: StrokeStyle(lineWidth: 0.6, lineJoin: .round))
+            }
+            var dome = Path()
+            dome.move(to: m(122, 364))
+            dome.addCurve(to: m(256, 176), control1: m(112, 262), control2: m(156, 178))
+            dome.addCurve(to: m(390, 364), control1: m(356, 176), control2: m(400, 262))
+            dome.closeSubpath()
+            head.fill(dome, with: .color(mascotBody))
+            let cheek = Color(red: 0.93, green: 0.75, blue: 0.71)
+            for x in [6.6, 15.4] { head.fill(Path(ellipseIn: CGRect(x: x - 1.2, y: baseY - 2.5, width: 2.4, height: 1.4)), with: .color(cheek)) }
+            let ey = baseY - 4.9, ex = [8.4, 13.6]
+            let g = pose.sweep.map { CGVector(dx: $0, dy: 0) } ?? gaze
+            let ink = Color.black, line = StrokeStyle(lineWidth: 1.2, lineCap: .round)
+            func arc(_ x: Double, _ lift: Double) {
+                var a = Path(); a.move(to: CGPoint(x: x - 1.8, y: ey + 0.7))
+                a.addQuadCurve(to: CGPoint(x: x + 1.8, y: ey + 0.7), control: CGPoint(x: x, y: ey + 0.7 - lift))
+                head.stroke(a, with: .color(ink), style: line)
+            }
+            func flat(_ x: Double, _ dir: Double) {
+                var l = Path(); l.move(to: CGPoint(x: x - 1.8, y: ey + 0.4 * dir)); l.addLine(to: CGPoint(x: x + 1.8, y: ey - 0.4 * dir))
+                head.stroke(l, with: .color(ink), style: line)
+            }
+            func eye(_ x: Double) {
+                let wide = pose.open > 1, rx = wide ? 2.3 : 1.9, ry = 2.4 * pose.open
+                let c = CGPoint(x: x + g.dx * 0.7, y: ey + (1 - min(pose.open, 1)) * 0.9 - g.dy * 0.5)
+                let shape = Path(ellipseIn: CGRect(x: c.x - rx, y: c.y - ry, width: 2 * rx, height: 2 * ry))
+                head.fill(shape, with: .color(ink))
+                if wide { head.fill(Path(ellipseIn: CGRect(x: c.x + g.dx * 0.4 - 1.4, y: c.y - g.dy * 0.5 - 1.4, width: 2.8, height: 2.8)), with: .color(accent ?? mascotBody)) }
+                else { head.fill(Path(ellipseIn: CGRect(x: c.x - 0.7 - rx * 0.25, y: c.y - ry * 0.3 - 0.8, width: 1.6, height: 1.6)), with: .color(accent ?? mascotBody)) }
+            }
+            if pose.happy > 0.5 { arc(ex[0], 2.8); arc(ex[1], 2.8) }
+            else if 2.4 * pose.open < 0.7 { flat(ex[0], 1); flat(ex[1], -1) }
+            else {
+                eye(ex[0])
+                if pose.wink < 0.5 { eye(ex[1]) } else { arc(ex[1], pose.open < 0.9 ? 1.0 : 2.8) }
+            }
+            head.fill(Path(ellipseIn: CGRect(x: 11 - 1.4, y: baseY - 3.1, width: 2.8, height: 2)), with: .color(ink))
+            if pose.happy > 0.5 { head.fill(Path(roundedRect: CGRect(x: 10.1, y: baseY - 1.2, width: 1.8, height: 1.6), cornerRadius: 0.8), with: .color(Color(red: 0.93, green: 0.45, blue: 0.5))) }
+            for x in [1.5, 17.2] { let paw = Path(roundedRect: CGRect(x: x, y: 11.6, width: 3.4, height: 3.6), cornerRadius: 1.6)
+                ctx.fill(paw, with: .color(mascotBody)); ctx.stroke(paw, with: .color(.black), lineWidth: 0.5) }
         }
         .frame(width: 22 * scale, height: 16 * scale)
     }

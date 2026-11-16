@@ -29,6 +29,10 @@ final class MascotTests: XCTestCase {
         XCTAssertEqual(MascotMath.pose(.done, t: 3, reduceMotion: false).open, 1)
         XCTAssertNotNil(MascotMath.pose(.working, t: 1, reduceMotion: false).sweep)
         XCTAssertEqual(MascotMath.pose(.failed, t: 1, reduceMotion: false).open, 0)
+        XCTAssertEqual(MascotMath.pose(.needs, t: 1, reduceMotion: false).wink, 0)
+        XCTAssertEqual(MascotMath.pose(.idle, t: 1, reduceMotion: false).wink, 1)
+        let ears = [MascotState.failed, .idle, .needs, .working].map { MascotMath.pose($0, t: 1, reduceMotion: false).ear }
+        XCTAssertEqual(ears, ears.sorted()); XCTAssertEqual(Set(ears).count, 4)  // drooped < relaxed < lifted
         XCTAssertEqual(MascotState(buddy: "compacting"), .working)
     }
 }

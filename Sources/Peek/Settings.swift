@@ -63,7 +63,11 @@ struct SettingsView: View {
                 ForEach(HotkeyAction.allCases, id: \.self) { ShortcutRow(action: $0, center: center) }
             }
             Section("About") {
-                LabeledContent("Peek", value: "Version \(Self.version)")
+                HStack(spacing: 12) {
+                    MascotArt(pose: MascotMath.pose(.idle, t: 1, reduceMotion: true), gaze: .zero, accent: nil, scale: 48.0 / 16)
+                        .accessibilityHidden(true)
+                    LabeledContent("Peek", value: "Version \(Self.version)")
+                }
                 Text("Not affiliated with Anthropic.").foregroundStyle(.secondary)
                 Text("Some code is adapted from Coucou (MIT, \u{00A9} 2026 Louis Raill\u{00E9}). See THIRD_PARTY_NOTICES.md.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
