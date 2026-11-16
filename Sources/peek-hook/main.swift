@@ -40,7 +40,7 @@ if CommandLine.arguments.contains("--statusline") {
 }
 
 let ppid = getppid()
-guard var ev = Hook.event(raw, pid: ppid, tty: "") else { exit(0) }
+guard var ev = Hook.event(raw, pid: ppid, tty: "", env: ProcessInfo.processInfo.environment) else { exit(0) }
 
 // MARK: --ask (PreToolUse on AskUserQuestion): the app shows the questions; on any failure print nothing so the terminal asks.
 if CommandLine.arguments.contains("--ask") {

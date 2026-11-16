@@ -12,6 +12,8 @@ Coucou's name, character, icon, sounds and media are not used in Peek. Only code
 - `Sources/PeekCore/AskQuestion.swift` (from `NotchBuddy/Sources/App/AskQuestion.swift` @ 0d7fe58, `parse` and `buildAnswers`)
 - `Sources/PeekCore/Diff.swift` (from `NotchBuddy/Sources/CoucouKit/DiffEngine.swift` @ 0d7fe58, LCS line diff and hunks; `forTool` adapted from `buildFileDiff` in `NotchBuddy/Sources/App/HookServer.swift`, around line 1652)
 - `Sources/PeekCore/Usage.swift` (from `NotchBuddy/Sources/App/ClaudePlanGauge.swift` @ 0d7fe58, `parse` and `merge`)
+- `Sources/PeekCore/Terminals.swift` (from `NotchBuddy/Sources/App/ClaudeHost.swift` @ 0d7fe58, terminal bundle-id and TERM_PROGRAM tables; VS Code and Cursor rows added)
+- `Sources/Peek/Focus.swift` (`activate` from `ClaudeHost.activate` in `NotchBuddy/Sources/App/ClaudeHost.swift` @ 0d7fe58, activation through Launch Services)
 
 ### License text
 

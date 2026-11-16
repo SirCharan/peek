@@ -151,7 +151,7 @@ struct RowView: View {
                     phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if job.state == "input" {
+                if job.state == "input", Focus.canType(job) {
                     Button { startReply() } label: {
                         Text("Reply…").font(.system(size: 11)).foregroundStyle(amber.opacity(hasTab ? 1 : 0.4)).contentShape(Rectangle())
                     }.buttonStyle(.plain).disabled(!hasTab).help(hasTab ? "" : "no terminal tab")
@@ -170,7 +170,7 @@ struct RowView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { Focus.jump(job, store: store) }
-        .task(id: job.id + job.state) { if job.state == "input" { hasTab = await Focus.tab(job) != nil } }
+        .task(id: job.id + job.state) { if job.state == "input" { hasTab = await Focus.hasTab(job) } }
     }
 
     /// Latest edit as `name +N −M`; tapping the text toggles the diff (the rest of the row still jumps to the terminal).
@@ -495,7 +495,7 @@ struct Root: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        .onHover { store.expanded = $0; store.syncOpen() }
+        .onHover { if !Store.demo { store.expanded = $0; store.syncOpen() } }
         .animation(spring, value: store.open)
         .ignoresSafeArea()
     }

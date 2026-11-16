@@ -49,10 +49,13 @@ public enum Hook {
     }
 
     /// Compact event record for the events file (and the socket). nil when the payload has no usable session id or event name.
-    public static func event(_ raw: [String: Any], pid: Int32, tty: String, now: Date = Date()) -> [String: Any]? {
+    public static func event(_ raw: [String: Any], pid: Int32, tty: String, env: [String: String] = [:], now: Date = Date()) -> [String: Any]? {
         guard let sid = safeSid(raw["session_id"]), let ev = raw["hook_event_name"] as? String, !ev.isEmpty else { return nil }
         var o: [String: Any] = ["t": Int(now.timeIntervalSince1970 * 1000), "ev": ev, "sid": sid, "pid": Int(pid), "tty": tty]
         if let c = raw["cwd"] as? String { o["cwd"] = c }
+        for (k, e) in [("tp", "TERM_PROGRAM"), ("bid", "__CFBundleIdentifier"), ("itsid", "ITERM_SESSION_ID")] {
+            if let v = env[e], !v.isEmpty { o[k] = cap(v, 64) }
+        }
         if let t = raw["tool_name"] as? String {
             o["tool_name"] = t
             o["tool_input"] = trimInput(t, raw["tool_input"] as? [String: Any] ?? [:])

@@ -39,6 +39,7 @@ final class NotchPanel: NSPanel {
         reframe()
         panel.orderFrontRegardless()
         track()
+        if Store.demo { store.expanded = true; store.syncOpen() }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 self.computeGeo()

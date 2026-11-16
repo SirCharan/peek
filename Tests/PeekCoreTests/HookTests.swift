@@ -16,6 +16,13 @@ final class HookTests: XCTestCase {
         XCTAssertEqual((o["last_assistant_message"] as? String)?.count, 400)
     }
 
+    func testTerminalIdentityOnlyWhenSet() throws {
+        let o = try XCTUnwrap(Hook.event(["session_id": "a", "hook_event_name": "Stop"], pid: 1, tty: "",
+                                         env: ["TERM_PROGRAM": "ghostty", "__CFBundleIdentifier": "", "ITERM_SESSION_ID": "w0t0p0:AB-1"], now: now))
+        XCTAssertEqual(o["tp"] as? String, "ghostty"); XCTAssertEqual(o["itsid"] as? String, "w0t0p0:AB-1"); XCTAssertNil(o["bid"])
+        XCTAssertNil(ev(["session_id": "a", "hook_event_name": "Stop"])?["tp"])
+    }
+
     func testRejectsBadSession() {
         XCTAssertNil(ev(["hook_event_name": "Stop"]))
         XCTAssertNil(ev(["session_id": "../etc", "hook_event_name": "Stop"]))

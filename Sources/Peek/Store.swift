@@ -3,6 +3,9 @@ import Observation
 import AppKit
 import PeekCore
 
+/// Where a session's hook ran: parent pid, controlling tty and the terminal env vars.
+struct TermId: Equatable, Sendable { var pid = 0, tty = "", tp = "", bid = "", itsid = "" }
+
 struct Job: Identifiable, Equatable, Sendable {
     let id: String
     var title: String
@@ -23,6 +26,7 @@ struct Job: Identifiable, Equatable, Sendable {
     var flash = ""
     var sid = ""
     var edit: FileDiff?
+    var term = TermId()
     var needsYou: Bool { state == "approval" || state == "input" }
 }
 
@@ -40,6 +44,8 @@ struct Perm: Equatable, Sendable {
     var open = false
     var diffOpen: String?
     var usage: PlanUsage?
+    /// `PEEK_DEMO=1`: card forced open for screenshots.
+    static let demo = ProcessInfo.processInfo.environment["PEEK_DEMO"] == "1"
     var alert: (kind: String, text: String)?
     @ObservationIgnored var popUntil = Date.distantPast
     @ObservationIgnored var popID = ""
@@ -89,7 +95,8 @@ struct Perm: Equatable, Sendable {
         var recent: [String] = []
         var compacting = false, ended = false
         var edit: FileDiff?
-        var agents = 0, pid = 0
+        var agents = 0
+        var term = TermId()
         var lastT = 0.0, stopT = 0.0
     }
     @ObservationIgnored private var sess: [String: Sess] = [:]
@@ -130,7 +137,10 @@ struct Perm: Equatable, Sendable {
         if rewound && t <= s.lastT { return }  // file was trimmed and re-read: skip what we already folded
         s.lastT = max(s.lastT, t)
         if let c = o["cwd"] as? String, !c.isEmpty { s.cwd = c }
-        if let p = (o["pid"] as? NSNumber)?.intValue, p > 0 { s.pid = p }
+        if let p = (o["pid"] as? NSNumber)?.intValue, p > 0 { s.term.pid = p }
+        for (k, kp) in [("tty", \TermId.tty), ("tp", \TermId.tp), ("bid", \TermId.bid), ("itsid", \TermId.itsid)] {
+            if let v = o[k] as? String, !v.isEmpty { s.term[keyPath: kp] = v }
+        }
         if let n = o["session_title"] as? String, !n.isEmpty { s.title = n }
         switch ev {
         case "SessionStart": s.ended = false
@@ -211,6 +221,11 @@ struct Perm: Equatable, Sendable {
         s.lastT = max(s.lastT, Date().timeIntervalSince1970 * 1000)
         sess[r.sid] = s
         refresh()
+        // the user is already looking at this session's terminal: hang up so it shows its own dialog; just bounce
+        guard let j = jobs.first(where: { $0.id == r.sid }) else { return }
+        Task {
+            if await Focus.isFront(j) { r.answer(""); bounceUntil = Date().addingTimeInterval(0.9); bounceTick += 1 }
+        }
     }
 
     @ObservationIgnored private var flashes: [String: (String, Date)] = [:]
@@ -274,7 +289,7 @@ struct Perm: Equatable, Sendable {
             rows.append(Job(id: sid, title: Eta.title(name: s.title.isEmpty ? status.name : s.title, text: s.prompt, cwd: s.cwd), state: st, phase: ph,
                             pct: Eta.pct(phase: ph, detail: s.last), ask: "", project: Eta.base(s.cwd), doing: lastSentence, agents: s.agents,
                             stuck: st == "working" && age > 120, tool: s.tool, ctxPct: status.ctx, compacting: s.compacting,
-                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit))
+                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit, term: s.term))
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
