@@ -43,6 +43,7 @@ public enum Hook {
                 kept.append(t)
             }
             o["edits"] = kept
+            if kept.count < es.count { o["edits_dropped"] = es.count - kept.count }
         }
         return o
     }

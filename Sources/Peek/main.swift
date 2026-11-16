@@ -60,7 +60,7 @@ final class NotchPanel: NSPanel {
     }
 
     func reframe() {
-        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, replying: store.replying)
+        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, replying: store.replying, diff: store.diffOpen, footer: store.expanded && store.usage != nil)
         let f = NSRect(x: screen.frame.midX + r.dx - r.size.width / 2, y: screen.frame.maxY - r.size.height,
                        width: r.size.width, height: r.size.height)
         collapseTask?.cancel()
@@ -77,7 +77,7 @@ final class NotchPanel: NSPanel {
 
     func track() {
         withObservationTracking {
-            _ = store.open; _ = store.expanded; _ = store.replying; _ = store.jobs; _ = store.alert
+            _ = store.open; _ = store.expanded; _ = store.replying; _ = store.jobs; _ = store.alert; _ = store.diffOpen; _ = store.usage
         } onChange: {
             Task { @MainActor in self.reframe(); self.track() }
         }

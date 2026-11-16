@@ -10,6 +10,8 @@ Coucou's name, character, icon, sounds and media are not used in Peek. Only code
 
 - `Sources/Peek/Server.swift` (from `NotchBuddy/Sources/App/HookServer.swift` @ 0d7fe58, socket setup, accept loop, peer-uid check and connection ceiling, lines 480-630)
 - `Sources/PeekCore/AskQuestion.swift` (from `NotchBuddy/Sources/App/AskQuestion.swift` @ 0d7fe58, `parse` and `buildAnswers`)
+- `Sources/PeekCore/Diff.swift` (from `NotchBuddy/Sources/CoucouKit/DiffEngine.swift` @ 0d7fe58, LCS line diff and hunks; `forTool` adapted from `buildFileDiff` in `NotchBuddy/Sources/App/HookServer.swift`, around line 1652)
+- `Sources/PeekCore/Usage.swift` (from `NotchBuddy/Sources/App/ClaudePlanGauge.swift` @ 0d7fe58, `parse` and `merge`)
 
 ### License text
 

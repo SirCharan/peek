@@ -17,15 +17,18 @@ enum Layout {
     static func askH(_ a: AskQuestion) -> CGFloat {
         min(520, 22 + a.questions.reduce(0) { $0 + 66 + 24 * CGFloat($1.options.count) } + 38)
     }
+    static let diffH: CGFloat = 130
+    static let footerH: CGFloat = 18
+    static func diffExtra(_ j: Job, _ diff: String?) -> CGFloat { diff == j.id && j.edit?.hunks.isEmpty == false ? diffH : 0 }
     static func h(_ j: Job, replying: String? = nil) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? (j.perm?.ask.map(askH) ?? (j.perm?.tall == true ? 64 : 52)) : (j.state == "input" && replying == j.id) ? 52 : rowH }
-    static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil) -> CGFloat {
-        let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) }
-        return g.notchH + body + 10
+    static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil, diff: String? = nil, footer: Bool = false) -> CGFloat {
+        let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) + diffExtra($1, diff) }
+        return g.notchH + body + 10 + (footer ? footerH : 0)
     }
 
     /// Panel size + horizontal offset from screen centre. Collapsed = menu bar band only.
-    static func rect(expanded: Bool, g: Geo, jobs: [Job], replying: String? = nil) -> (size: CGSize, dx: CGFloat) {
-        if expanded { return (CGSize(width: cardW(g), height: cardH(jobs, g, replying: replying)), 0) }
+    static func rect(expanded: Bool, g: Geo, jobs: [Job], replying: String? = nil, diff: String? = nil, footer: Bool = false) -> (size: CGSize, dx: CGFloat) {
+        if expanded { return (CGSize(width: cardW(g), height: cardH(jobs, g, replying: replying, diff: diff, footer: footer)), 0) }
         return (CGSize(width: bandW(g), height: g.notchH), 0)
     }
 }
@@ -143,8 +146,11 @@ struct RowView: View {
                 StateDot(job: job, alerting: alerting)
                 Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                     .lineLimit(1).frame(width: 90, alignment: .leading)
-                phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if job.state == "working", job.flash.isEmpty, let e = job.edit { ticker(e) }
+                else {
+                    phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 if job.state == "input" {
                     Button { startReply() } label: {
                         Text("Reply…").font(.system(size: 11)).foregroundStyle(amber.opacity(hasTab ? 1 : 0.4)).contentShape(Rectangle())
@@ -165,6 +171,20 @@ struct RowView: View {
         .contentShape(Rectangle())
         .onTapGesture { Focus.jump(job, store: store) }
         .task(id: job.id + job.state) { if job.state == "input" { hasTab = await Focus.tab(job) != nil } }
+    }
+
+    /// Latest edit as `name +N −M`; tapping the text toggles the diff (the rest of the row still jumps to the terminal).
+    private func ticker(_ e: FileDiff) -> some View {
+        var t = Text(e.name).foregroundStyle(.white.opacity(0.6))
+        if !e.capped {
+            t = t + Text(" +\(e.added)").foregroundStyle(.green)
+            if !e.isNew { t = t + Text(" \u{2212}\(e.removed)").foregroundStyle(.red) }
+        }
+        return HStack(spacing: 0) {
+            t.font(.system(size: 12)).monospacedDigit().lineLimit(1).truncationMode(.middle)
+                .onTapGesture { if !e.hunks.isEmpty { store.diffOpen = store.diffOpen == job.id ? nil : job.id } }
+            Spacer(minLength: 0)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @State private var hasTab = true
@@ -335,6 +355,48 @@ struct QuestionCard: View {
     }
 }
 
+/// Compact unified diff of a session's latest edit.
+struct DiffView: View {
+    let diff: FileDiff
+    var body: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(diff.hunks.indices, id: \.self) { h in
+                    if h > 0 { Text("\u{22EF}").foregroundStyle(.white.opacity(0.4)) }
+                    ForEach(diff.hunks[h].lines.indices, id: \.self) { i in
+                        let l = diff.hunks[h].lines[i]
+                        let (p, c): (String, Color) = l.kind == .added ? ("+", .green) : l.kind == .removed ? ("\u{2212}", .red) : (" ", .white.opacity(0.6))
+                        Text("\(p) \(l.text)").foregroundStyle(c).lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(l.kind == .context ? Color.clear : c.opacity(0.12))
+                    }
+                }
+            }.font(.system(size: 10, design: .monospaced)).padding(.vertical, 2)
+        }
+        .padding(.horizontal, 14).frame(height: Layout.diffH)
+    }
+}
+
+/// One thin line of plan usage; amber at 80%, red at 95%, like the context bar.
+struct UsageFooter: View {
+    let usage: PlanUsage
+    private func part(_ label: String, _ w: PlanWindow?, weekday: Bool) -> some View {
+        Group {
+            if let w {
+                Text(Usage.text(label, w, weekday: weekday)).monospacedDigit()
+                    .foregroundStyle(w.usedPct >= 95 ? .red : w.usedPct >= 80 ? amber : .white.opacity(0.45))
+            }
+        }
+    }
+    var body: some View {
+        HStack(spacing: 16) {
+            part("5h", usage.fiveHour, weekday: false)
+            part("week", usage.sevenDay, weekday: true)
+            Spacer(minLength: 0)
+        }.font(.system(size: 10)).lineLimit(1).padding(.horizontal, 14).frame(height: Layout.footerH)
+    }
+}
+
 /// 12pt two-frame glyph, 600 ms per frame.
 struct Buddy: View {
     let kind: String
@@ -403,11 +465,15 @@ struct Card: View {
                 Text("No Claude tasks running").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
                     .frame(height: Layout.emptyH)
             }
-            ForEach(store.shown.prefix(Layout.maxRows)) { RowView(job: $0, alerting: $0.id == store.alertJobID, store: store) }
+            ForEach(store.shown.prefix(Layout.maxRows)) { j in
+                RowView(job: j, alerting: j.id == store.alertJobID, store: store)
+                if Layout.diffExtra(j, store.diffOpen) > 0, let e = j.edit { DiffView(diff: e) }
+            }
             Spacer(minLength: 0)
+            if store.expanded, let u = store.usage { UsageFooter(usage: u) }
         }
         .foregroundStyle(.white)
-        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo, replying: store.replying), alignment: .top)
+        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo, replying: store.replying, diff: store.diffOpen, footer: store.expanded && store.usage != nil), alignment: .top)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(.black))
     }
 }

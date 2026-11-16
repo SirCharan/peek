@@ -22,6 +22,7 @@ struct Job: Identifiable, Equatable, Sendable {
     var perm: Perm?
     var flash = ""
     var sid = ""
+    var edit: FileDiff?
     var needsYou: Bool { state == "approval" || state == "input" }
 }
 
@@ -37,6 +38,8 @@ struct Perm: Equatable, Sendable {
     var jobs: [Job] = []
     var expanded = false
     var open = false
+    var diffOpen: String?
+    var usage: PlanUsage?
     var alert: (kind: String, text: String)?
     @ObservationIgnored var popUntil = Date.distantPast
     @ObservationIgnored var popID = ""
@@ -67,6 +70,7 @@ struct Perm: Equatable, Sendable {
     func syncOpen() {
         if expanded, let k = alertKey, acked.insert(k).inserted { updateAlert() }
         let o = expanded || Date() < popUntil; if o != open { open = o }
+        if !expanded && diffOpen != nil { diffOpen = nil }
     }
     private func updateAlert() {
         func t(_ k: String, _ l: String) -> (kind: String, text: String, key: String)? {
@@ -84,6 +88,7 @@ struct Perm: Equatable, Sendable {
         var cwd = "", title = "", prompt = "", state = "idle", tool = "", last = "", ntype = "", msg = ""
         var recent: [String] = []
         var compacting = false, ended = false
+        var edit: FileDiff?
         var agents = 0, pid = 0
         var lastT = 0.0, stopT = 0.0
     }
@@ -130,19 +135,21 @@ struct Perm: Equatable, Sendable {
         switch ev {
         case "SessionStart": s.ended = false
         case "UserPromptSubmit":
-            s.ended = false; s.state = "working"; s.tool = ""; s.last = ""; s.ntype = ""; s.msg = ""; s.recent = []; s.compacting = false
+            s.ended = false; s.state = "working"; s.tool = ""; s.last = ""; s.ntype = ""; s.msg = ""; s.recent = []; s.compacting = false; s.edit = nil
             if s.prompt.isEmpty { s.prompt = o["prompt"] as? String ?? "" }
         case "PreToolUse":
             let tool = o["tool_name"] as? String ?? "", label = Store.toolLabel(tool, o["tool_input"] as? [String: Any] ?? [:])
-            s.state = "working"; s.tool = label; s.ntype = ""; s.msg = ""
+            s.state = "working"; s.tool = label; s.ntype = ""; s.msg = ""; s.edit = nil
             s.recent = Array((s.recent + [label]).suffix(10))
-        case "PostToolUse", "PostToolUseFailure": s.state = "working"; s.tool = ""; s.ntype = ""; s.msg = ""
+        case "PostToolUse", "PostToolUseFailure":
+            s.state = "working"; s.tool = ""; s.ntype = ""; s.msg = ""
+            s.edit = ev == "PostToolUse" ? DiffEngine.forTool(o["tool_name"] as? String ?? "", o["tool_input"] as? [String: Any] ?? [:]) : nil
         case "Notification": s.ntype = o["notification_type"] as? String ?? ""; s.msg = o["message"] as? String ?? ""
         case "PreCompact": s.compacting = true
         case "PostCompact": s.compacting = false
         case "SubagentStart": s.agents += 1
         case "SubagentStop": s.agents = max(0, s.agents - 1)
-        case "Stop": s.state = "done"; s.stopT = t; s.tool = ""; s.ntype = ""; s.msg = ""; s.agents = 0; s.compacting = false; s.last = o["last_assistant_message"] as? String ?? ""
+        case "Stop": s.state = "done"; s.stopT = t; s.tool = ""; s.ntype = ""; s.msg = ""; s.agents = 0; s.compacting = false; s.edit = nil; s.last = o["last_assistant_message"] as? String ?? ""
         case "StopFailure": s.state = "failed"; s.stopT = t; s.tool = ""; s.agents = 0; s.compacting = false
         case "SessionEnd": s.ended = true
         default: break
@@ -174,6 +181,17 @@ struct Perm: Equatable, Sendable {
         guard let d = FileManager.default.contents(atPath: "\(PeekPaths.status)/\(sid).json"),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
         return ((o["ctx"] as? NSNumber)?.intValue, o["session_name"] as? String ?? "")
+    }
+
+    /// Freshest rate_limits across every session's status file.
+    private func readUsage() -> PlanUsage? {
+        let dir = PeekPaths.status
+        let all = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".json") }.compactMap { n -> PlanUsage? in
+            guard let d = FileManager.default.contents(atPath: "\(dir)/\(n)"),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+            return Usage.parse(o)
+        }
+        return Usage.freshest(all)
     }
 
     private static func perm(_ r: PermRequest) -> Perm {
@@ -256,7 +274,7 @@ struct Perm: Equatable, Sendable {
             rows.append(Job(id: sid, title: Eta.title(name: s.title.isEmpty ? status.name : s.title, text: s.prompt, cwd: s.cwd), state: st, phase: ph,
                             pct: Eta.pct(phase: ph, detail: s.last), ask: "", project: Eta.base(s.cwd), doing: lastSentence, agents: s.agents,
                             stuck: st == "working" && age > 120, tool: s.tool, ctxPct: status.ctx, compacting: s.compacting,
-                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid))
+                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit))
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
@@ -285,6 +303,7 @@ struct Perm: Equatable, Sendable {
         }
         seeded = true
         if rows != jobs { jobs = rows }
+        let u = readUsage(); if u != usage { usage = u }
         acked = acked.filter { k in rows.contains { k.hasPrefix($0.id + "|") } }
         updateAlert()
         syncOpen()
