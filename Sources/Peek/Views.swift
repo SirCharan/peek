@@ -96,7 +96,7 @@ struct ApprovalButtons: View {
             }.buttonStyle(.plain)
             if p?.allowAlways ?? true {
                 Button { store.reply(job, "always") } label: {
-                    Text("Always").font(.system(size: 11)).foregroundStyle(amber)
+                    Text(p?.alwaysButton ?? "Always").font(.system(size: 11)).foregroundStyle(amber)
                         .padding(.horizontal, 4).frame(height: 20).contentShape(Rectangle())
                 }.buttonStyle(.plain).help(p?.always ?? "")
             }
@@ -378,9 +378,10 @@ struct DiffView: View {
     }
 }
 
-/// One thin line of plan usage; amber at 80%, red at 95%, like the context bar.
+/// One thin line of plan usage; amber at 80%, red at 95%, like the context bar. Shows "muted" at the right while sounds are off.
 struct UsageFooter: View {
-    let usage: PlanUsage
+    let usage: PlanUsage?
+    let muted: Bool
     private func part(_ label: String, _ w: PlanWindow?, weekday: Bool) -> some View {
         Group {
             if let w {
@@ -391,9 +392,10 @@ struct UsageFooter: View {
     }
     var body: some View {
         HStack(spacing: 16) {
-            part("5h", usage.fiveHour, weekday: false)
-            part("week", usage.sevenDay, weekday: true)
+            part("5h", usage?.fiveHour, weekday: false)
+            part("week", usage?.sevenDay, weekday: true)
             Spacer(minLength: 0)
+            if muted { Label("muted", systemImage: "speaker.slash").foregroundStyle(.white.opacity(0.45)) }
         }.font(.system(size: 10)).lineLimit(1).padding(.horizontal, 14).frame(height: Layout.footerH)
     }
 }
@@ -457,10 +459,10 @@ struct Card: View {
                 if Layout.diffExtra(j, store.diffOpen) > 0, let e = j.edit { DiffView(diff: e) }
             }
             Spacer(minLength: 0)
-            if store.expanded, let u = store.usage { UsageFooter(usage: u) }
+            if store.showFooter { UsageFooter(usage: store.usage, muted: Sounds.muted) }
         }
         .foregroundStyle(.white)
-        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo, replying: store.replying, diff: store.diffOpen, footer: store.expanded && store.usage != nil), alignment: .top)
+        .frame(width: Layout.cardW(geo), height: Layout.cardH(store.shown, geo, replying: store.replying, diff: store.diffOpen, footer: store.showFooter), alignment: .top)
         .background(UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14).fill(.black))
     }
 }

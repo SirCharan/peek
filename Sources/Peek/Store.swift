@@ -27,6 +27,7 @@ struct Job: Identifiable, Equatable, Sendable {
     var sid = ""
     var edit: FileDiff?
     var term = TermId()
+    var lastT = 0.0
     var needsYou: Bool { state == "approval" || state == "input" }
 }
 
@@ -36,6 +37,8 @@ struct Perm: Equatable, Sendable {
     var ask: AskQuestion?
     var mono: Bool { tool == "Bash" || ["Edit", "Write", "NotebookEdit", "Read"].contains(tool) }
     var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
+    /// "Always" for an allow rule; the mode name ("Accept edits") when Always would switch permission mode.
+    var alwaysButton: String { Hook.alwaysButton(always) }
 }
 
 /// Latest pointer position in screen coordinates (bottom-left origin), published at most 30 times a second
@@ -50,6 +53,8 @@ struct Perm: Equatable, Sendable {
     @ObservationIgnored private var inside = false
     var expanded = false
     var open = false
+    /// Card held open by the hotkey (the pointer no longer decides).
+    var pinned = false
     var diffOpen: String?
     var usage: PlanUsage?
     /// `PEEK_DEMO=1`: card forced open for screenshots.
@@ -59,16 +64,6 @@ struct Perm: Equatable, Sendable {
     @ObservationIgnored var popID = ""
     var bounceUntil = Date.distantPast
     var bounceTick = 0
-    private static let fallback = ["needs": "Ping", "done": "Glass", "fail": "Basso"]
-    private static var sounds: [String: NSSound] = [:]
-    static func sound(_ n: String) -> NSSound? {
-        if let s = sounds[n] { return s }
-        let s = Bundle.module.url(forResource: n, withExtension: "wav", subdirectory: "Sounds")
-            .flatMap { NSSound(contentsOf: $0, byReference: true) } ?? fallback[n].flatMap { NSSound(named: $0) }
-        sounds[n] = s
-        return s
-    }
-    static func play(_ n: String) { sound(n)?.stop(); sound(n)?.play() }
     /// overall state for the buddy glyph
     var buddy: String {
         if jobs.contains(where: { $0.needsYou }) { return "needs" }
@@ -87,10 +82,17 @@ struct Perm: Equatable, Sendable {
         if !expanded && diffOpen != nil { diffOpen = nil }
         let p: Presence = open ? .home : level; if p != presence { presence = p }
     }
+    var showFooter: Bool { expanded && (usage != nil || Sounds.muted) }
+    var pendingCount: Int { pending.values.reduce(0) { $0 + $1.count } }
+    /// Hotkey: pin the card open, or close it (a still pointer over the card reopens it on the next move).
+    func toggleCard() {
+        if open { inside = false; pinned = false; popUntil = .distantPast } else { pinned = true }
+        stepLevel()
+    }
     /// Pointer inside the hit area (notch or bar, band, or card, depending on `presence`).
     func setInside(_ v: Bool) { if v != inside { inside = v; stepLevel() } }
     private func stepLevel() {
-        level = PresenceMachine.next(level, hasSessions: !jobs.isEmpty, inside: inside, demo: Store.demo)
+        level = pinned ? .home : PresenceMachine.next(level, hasSessions: !jobs.isEmpty, inside: inside, demo: Store.demo)
         let e = level == .home; if e != expanded { expanded = e }
         syncOpen()
     }
@@ -305,7 +307,7 @@ struct Perm: Equatable, Sendable {
             rows.append(Job(id: sid, title: Eta.title(name: s.title.isEmpty ? status.name : s.title, text: s.prompt, cwd: s.cwd), state: st, phase: ph,
                             pct: Eta.pct(phase: ph, detail: s.last), ask: "", project: Eta.base(s.cwd), doing: lastSentence, agents: s.agents,
                             stuck: st == "working" && age > 120, tool: s.tool, ctxPct: status.ctx, compacting: s.compacting,
-                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit, term: s.term))
+                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit, term: s.term, lastT: s.lastT))
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
@@ -325,7 +327,7 @@ struct Perm: Equatable, Sendable {
                         FileHandle.standardError.write(Data("alert: front→bounce\n".utf8))
                         bounceUntil = Date().addingTimeInterval(0.9); bounceTick += 1
                     } else {
-                        Store.play(snd)
+                        Sounds.play(snd)
                         popUntil = Date().addingTimeInterval(4); popID = j.id
                     }
                 }
@@ -342,3 +344,41 @@ struct Perm: Equatable, Sendable {
 }
 
 private extension Array { var nilIfEmpty: [Element]? { isEmpty ? nil : self } }
+
+/// Event sounds: `~/.peek/sounds/<event>.{wav,aiff,caf,m4a,mp3}` first, then the bundled WAV, then a system sound.
+@MainActor @Observable final class Sounds {
+    // Portions adapted from Coucou (github.com/Louis-CFM/coucou, NotchBuddy/Sources/App/SoundEngine.swift@0d7fe58), © 2026 Louis Raillé, MIT. See THIRD_PARTY_NOTICES.md.
+    nonisolated static let extensions = ["wav", "aiff", "caf", "m4a", "mp3"]
+    private static let fallback = ["needs": "Ping", "done": "Glass", "fail": "Basso"]
+    private static let shared = Sounds()
+    private var mutedFlag = UserDefaults.standard.bool(forKey: "muted")
+    private var cache: [String: NSSound] = [:]
+    /// UserDefaults key `muted`. Reads are observed, so the card footer follows it.
+    static var muted: Bool {
+        get { shared.mutedFlag }
+        set { shared.mutedFlag = newValue; UserDefaults.standard.set(newValue, forKey: "muted") }
+    }
+
+    nonisolated static func customURL(_ name: String) -> URL? {
+        for ext in extensions {
+            let u = URL(fileURLWithPath: PeekPaths.sounds).appendingPathComponent(name).appendingPathExtension(ext)
+            if FileManager.default.isReadableFile(atPath: u.path) { return u }
+        }
+        return nil
+    }
+    private func sound(_ n: String) -> NSSound? {
+        let custom = Sounds.customURL(n)
+        let key = custom?.path ?? n
+        if let s = cache[key] { return s }
+        let s = custom.flatMap { NSSound(contentsOf: $0, byReference: true) }  // an undecodable file falls through to the bundled one
+            ?? Bundle.module.url(forResource: n, withExtension: "wav", subdirectory: "Sounds").flatMap { NSSound(contentsOf: $0, byReference: true) }
+            ?? Sounds.fallback[n].flatMap { NSSound(named: $0) }
+        cache[key] = s
+        return s
+    }
+    /// `preview` plays even while muted (the Settings play button).
+    static func play(_ n: String, preview: Bool = false) {
+        guard preview || !muted else { return }
+        let s = shared.sound(n); s?.stop(); s?.play()
+    }
+}

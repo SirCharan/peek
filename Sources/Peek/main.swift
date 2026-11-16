@@ -44,6 +44,11 @@ final class NotchPanel: NSPanel {
         track()
         panel.acceptsMouseMovedEvents = true
         startPointer()
+        HotkeyCenter.shared.start { [store] a in store.hotkey(a) }
+        // a second launch posts this (see below) so the user can always reach Settings and Quit
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("peek.openSettings"), object: PeekPaths.dir, queue: .main) { _ in
+            MainActor.assumeIsolated { self.openSettings() }
+        }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 self.relayout()
@@ -99,7 +104,7 @@ final class NotchPanel: NSPanel {
     }
 
     func reframe() {
-        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, replying: store.replying, diff: store.diffOpen, footer: store.expanded && store.usage != nil)
+        let r = Layout.rect(expanded: store.open, g: geo, jobs: store.shown, replying: store.replying, diff: store.diffOpen, footer: store.showFooter)
         let f = NSRect(x: screen.frame.midX + r.dx - r.size.width / 2, y: screen.frame.maxY - r.size.height,
                        width: r.size.width, height: r.size.height)
         panel.ignoresMouseEvents = store.presence == .hidden
@@ -117,7 +122,7 @@ final class NotchPanel: NSPanel {
 
     func track() {
         withObservationTracking {
-            _ = store.open; _ = store.expanded; _ = store.replying; _ = store.jobs; _ = store.alert; _ = store.diffOpen; _ = store.usage; _ = store.presence
+            _ = store.open; _ = store.expanded; _ = store.replying; _ = store.jobs; _ = store.alert; _ = store.diffOpen; _ = store.usage; _ = store.presence; _ = store.pinned; _ = Sounds.muted
         } onChange: {
             Task { @MainActor in self.reframe(); self.track() }
         }
@@ -130,6 +135,9 @@ final class NotchPanel: NSPanel {
         let item = NSMenuItem(title: "Screen", action: nil, keyEquivalent: "")
         item.submenu = sub
         m.addItem(item)
+        let st = NSMenuItem(title: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
+        st.target = self
+        m.addItem(st)
         m.addItem(.separator())
         m.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         panel.contextMenu = m
@@ -153,6 +161,8 @@ final class NotchPanel: NSPanel {
         }
     }
 
+    @objc func openSettings() { SettingsWindow.show { [weak self] in self?.relayout() } }
+
     @objc func pickScreen(_ i: NSMenuItem) {
         UserDefaults.standard.set(i.representedObject as? String ?? "notch", forKey: "screen")
         relayout()
@@ -161,6 +171,14 @@ final class NotchPanel: NSPanel {
 
 let app = NSApplication.shared
 if let dir = ProcessInfo.processInfo.environment["PEEK_RENDER_MASCOT"] { MainActor.assumeIsolated { renderMascot(to: dir) }; exit(0) }
+if let dir = ProcessInfo.processInfo.environment["PEEK_RENDER_SETTINGS"] { MainActor.assumeIsolated { renderSettings(to: dir) }; exit(0) }
+// one instance: the lock lives as long as the process; a second launch asks the first to open Settings and exits
+try? FileManager.default.createDirectory(atPath: PeekPaths.dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+let lockFD = open(PeekPaths.dir + "/peek.lock", O_CREAT | O_RDWR, 0o600)
+if lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
+    DistributedNotificationCenter.default().postNotificationName(Notification.Name("peek.openSettings"), object: PeekPaths.dir, userInfo: nil, deliverImmediately: true)
+    exit(0)
+}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

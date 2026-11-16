@@ -7,6 +7,7 @@ public enum PeekPaths {
     public static var events: String { dir + "/events" }
     public static var status: String { dir + "/status" }
     public static var sock: String { dir + "/peek.sock" }
+    public static var sounds: String { dir + "/sounds" }
     public static var prevStatusline: String { dir + "/prev-statusline" }
 }
 
@@ -87,6 +88,14 @@ public enum Hook {
         }
         guard !rules.isEmpty else { return nil }
         return (u, "always allow " + rules.joined(separator: ", "))
+    }
+
+    /// Button text for the `always` label: "Always" for an allow rule, the mode itself ("Accept edits") for a mode switch.
+    public static func alwaysButton(_ label: String) -> String {
+        guard label.hasPrefix("switch to "), label.hasSuffix(" mode") else { return "Always" }
+        var words = ""
+        for ch in label.dropFirst(10).dropLast(5) { words += ch.isUppercase ? " " + ch.lowercased() : String(ch) }
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 
     /// Reply verbs: `allow`, `always`, `deny` or `deny:<reason>`. nil = no decision (Claude Code shows its own dialog).
