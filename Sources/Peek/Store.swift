@@ -38,8 +38,16 @@ struct Perm: Equatable, Sendable {
     var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
 }
 
+/// Latest pointer position in screen coordinates (bottom-left origin), published at most 30 times a second
+/// and only while the band or card is visible. The mascot's eyes read `location`.
+@MainActor @Observable final class Pointer { var location = CGPoint.zero }
+
 @MainActor @Observable final class Store {
     var jobs: [Job] = []
+    var presence = Presence.hidden
+    let pointer = Pointer()
+    @ObservationIgnored private var level = Presence.hidden
+    @ObservationIgnored private var inside = false
     var expanded = false
     var open = false
     var diffOpen: String?
@@ -77,6 +85,14 @@ struct Perm: Equatable, Sendable {
         if expanded, let k = alertKey, acked.insert(k).inserted { updateAlert() }
         let o = expanded || Date() < popUntil; if o != open { open = o }
         if !expanded && diffOpen != nil { diffOpen = nil }
+        let p: Presence = open ? .home : level; if p != presence { presence = p }
+    }
+    /// Pointer inside the hit area (notch or bar, band, or card, depending on `presence`).
+    func setInside(_ v: Bool) { if v != inside { inside = v; stepLevel() } }
+    private func stepLevel() {
+        level = PresenceMachine.next(level, hasSessions: !jobs.isEmpty, inside: inside, demo: Store.demo)
+        let e = level == .home; if e != expanded { expanded = e }
+        syncOpen()
     }
     private func updateAlert() {
         func t(_ k: String, _ l: String) -> (kind: String, text: String, key: String)? {
@@ -321,7 +337,7 @@ struct Perm: Equatable, Sendable {
         let u = readUsage(); if u != usage { usage = u }
         acked = acked.filter { k in rows.contains { k.hasPrefix($0.id + "|") } }
         updateAlert()
-        syncOpen()
+        stepLevel()
     }
 }
 

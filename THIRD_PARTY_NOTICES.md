@@ -14,6 +14,7 @@ Coucou's name, character, icon, sounds and media are not used in Peek. Only code
 - `Sources/PeekCore/Usage.swift` (from `NotchBuddy/Sources/App/ClaudePlanGauge.swift` @ 0d7fe58, `parse` and `merge`)
 - `Sources/PeekCore/Terminals.swift` (from `NotchBuddy/Sources/App/ClaudeHost.swift` @ 0d7fe58, terminal bundle-id and TERM_PROGRAM tables; VS Code and Cursor rows added)
 - `Sources/Peek/Focus.swift` (`activate` from `ClaudeHost.activate` in `NotchBuddy/Sources/App/ClaudeHost.swift` @ 0d7fe58, activation through Launch Services)
+- `Sources/PeekCore/Presence.swift` (from `NotchBuddy/Sources/App/IslandStateMachine.swift`, `NotchBuddy/Sources/App/IslandDisplayChoice.swift` and `NotchBuddy/Sources/CoucouKit/IslandScreenGeometry.swift` @ 0d7fe58; three-state hover machine, screen choice resolver, 80x24 no-notch bar)
 
 ### License text
 

@@ -13,10 +13,11 @@ enum Layout {
     static func bandW(_ g: Geo) -> CGFloat { g.notchW + 2 * wing }
     static func cardW(_ g: Geo) -> CGFloat { max(440, g.notchW + 144) }
 
-    /// Question card: header row + per question (title 34, options 24 each, Other 26, gap 6) + footer, capped (it scrolls past the cap).
-    static func askH(_ a: AskQuestion) -> CGFloat {
-        min(520, 22 + a.questions.reduce(0) { $0 + 66 + 24 * CGFloat($1.options.count) } + 38)
-    }
+    /// Question card: header 22 + per question (6 top, title 14 per line, 4, options 24 each, Other 22, 4) + footer 32, capped (it scrolls past the cap).
+    static func askTitle(_ q: AskItem) -> String { q.header.isEmpty ? q.question : "\(q.header.uppercased()) \u{00B7} \(q.question)" }
+    static func askTitleH(_ q: AskItem) -> CGFloat { askTitle(q).count > 64 ? 28 : 14 }
+    static func askQH(_ q: AskItem) -> CGFloat { 36 + askTitleH(q) + 24 * CGFloat(q.options.count) }
+    static func askH(_ a: AskQuestion) -> CGFloat { min(520, 22 + a.questions.reduce(0) { $0 + askQH($1) } + 32) }
     static let diffH: CGFloat = 130
     static let footerH: CGFloat = 18
     static func diffExtra(_ j: Job, _ diff: String?) -> CGFloat { diff == j.id && j.edit?.hunks.isEmpty == false ? diffH : 0 }
@@ -318,7 +319,7 @@ struct QuestionCard: View {
                     Text("Submit").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
                         .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber.opacity(complete ? 1 : 0.35))).contentShape(Capsule())
                 }.buttonStyle(.plain).disabled(!complete)
-            }.frame(height: 38)
+            }.frame(height: 32)
         }
         .padding(.horizontal, 14)
         .frame(height: Layout.askH(ask))
@@ -327,8 +328,8 @@ struct QuestionCard: View {
     private func questionView(_ i: Int) -> some View {
         let q = ask.questions[i]
         return VStack(alignment: .leading, spacing: 0) {
-            Text(q.header.isEmpty ? q.question : "\(q.header.uppercased()) · \(q.question)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
-                .lineLimit(2).frame(height: 34, alignment: .leading)
+            Text(Layout.askTitle(q)).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(2).frame(height: Layout.askTitleH(q), alignment: .topLeading).padding(.top, 6).padding(.bottom, 4)
             ForEach(q.options.indices, id: \.self) { k in
                 let o = q.options[k], on = picked[i].contains(o.label)
                 Button { toggle(i, o.label) } label: {
@@ -349,9 +350,9 @@ struct QuestionCard: View {
                 .onChange(of: other[i]) { _, v in if !q.multiSelect && !v.isEmpty { picked[i] = [] } }
                 .onSubmit { submit() }
                 .onExitCommand { focus = nil; notchPanel?.resignKey() }
-                .frame(height: 26, alignment: .top)
-            Color.clear.frame(height: 6)
+            Color.clear.frame(height: 4)
         }
+        .frame(height: Layout.askQH(q), alignment: .top)
     }
 }
 
@@ -489,13 +490,12 @@ struct Root: View {
             if store.open {
                 Card(store: store, geo: geo)
                     .matchedGeometryEffect(id: 1, in: ns)
-            } else {
+            } else if store.presence != .hidden {
                 collapsed.matchedGeometryEffect(id: 2, in: ns)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        .onHover { if !Store.demo { store.expanded = $0; store.syncOpen() } }
         .animation(spring, value: store.open)
         .ignoresSafeArea()
     }
