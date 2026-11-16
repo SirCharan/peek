@@ -8,7 +8,7 @@ Coucou's name, character, icon, sounds and media are not used in Peek. Only code
 
 ### Files adapted
 
-(none yet)
+- `Sources/Peek/Server.swift` (from `NotchBuddy/Sources/App/HookServer.swift` @ 0d7fe58, socket setup, accept loop, peer-uid check and connection ceiling, lines 480-630)
 
 ### License text
 

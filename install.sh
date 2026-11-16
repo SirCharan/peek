@@ -1,64 +1,94 @@
 #!/bin/bash
-# usage: install.sh [uninstall]
+# usage: install.sh [--yes]
+# Builds Peek, installs ~/.peek/bin/peek-hook, merges Peek's hooks into ~/.claude/settings.json (diff + y/N), installs the LaunchAgent.
+# Env: PEEK_NO_LAUNCHD=1 skips launchctl; PEEK_SKIP_BUILD=1 reuses an existing .build/release (both for tests).
+set -euo pipefail
+YES=0; [ "${1:-}" = "--yes" ] && YES=1
 LABEL=com.sircharan.peek
-PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+PEEK="$HOME/.peek"
 SETTINGS="$HOME/.claude/settings.json"
-HOOKS="$HOME/.claude/hooks"
-EVENTS="PreToolUse PostToolUse Notification PreCompact PostCompact Stop UserPromptSubmit"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+command -v python3 >/dev/null || { echo "python3 is required (it edits settings.json)"; exit 1; }
 
-if [ "$1" = "uninstall" ]; then
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
-  rm -f "$PLIST"
-  python3 - "$SETTINGS" "$HOOKS/statusline-notch.sh" <<'PY'
-import json, sys, re, os
-sp, wrapper = sys.argv[1:3]
-d = json.load(open(sp))
+if [ "${PEEK_SKIP_BUILD:-0}" != 1 ]; then
+  command -v swift >/dev/null || { echo "swift not found: install Xcode or the Command Line Tools"; exit 1; }
+  (cd "$DIR" && swift build -c release 2>&1 | tail -3)
+fi
+[ -x "$DIR/.build/release/peek-hook" ] && [ -x "$DIR/.build/release/Peek" ] || { echo "build products missing in $DIR/.build/release"; exit 1; }
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$HOME/.claude"
+python3 - "$SETTINGS" "$TMP" <<'PY' || exit 1
+import json, os, sys
+sp, tmp = sys.argv[1:3]
+MARK = "peek"
+HOOK = "~/.peek/bin/peek-hook"
+STATUS = HOOK + " --statusline"
+ASYNC = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification",
+         "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop", "StopFailure", "SessionEnd"]
+def die(m): print("refusing to edit %s: %s" % (sp, m)); sys.exit(2)
+d = {}
+if os.path.exists(sp):
+    try: d = json.load(open(sp))
+    except Exception as e: die("not valid JSON (%s)" % e)
+if not isinstance(d, dict): die("top level is not an object")
 h = d.get("hooks", {})
+if not isinstance(h, dict): die('"hooks" is not an object')
+for ev, groups in h.items():
+    if not isinstance(groups, list): die('hooks.%s is not a list' % ev)
+    for g in groups:
+        if not isinstance(g, dict) or not isinstance(g.get("hooks", []), list): die('hooks.%s has an unknown shape' % ev)
+        if any(not isinstance(x, dict) for x in g.get("hooks", [])): die('hooks.%s has an unknown shape' % ev)
+sl = d.get("statusLine")
+if sl is not None and (not isinstance(sl, dict) or not isinstance(sl.get("command", ""), str)): die('"statusLine" has an unknown shape')
+# drop previous Peek entries, then add one fresh group per event
 for ev in list(h):
-    h[ev] = [g for g in h[ev] if not any(x.get("statusMessage") == "notch" for x in g.get("hooks", []))]
+    for g in h[ev]: g["hooks"] = [x for x in g.get("hooks", []) if x.get("statusMessage") != MARK]
+    h[ev] = [g for g in h[ev] if g.get("hooks") or "hooks" not in g]
     if not h[ev]: del h[ev]
-if not h: d.pop("hooks", None)
-sl = d.get("statusLine", {})
-if "statusline-notch.sh" in sl.get("command", "") and os.path.exists(wrapper):
-    m = re.search(r"<<'NOTCH_ORIG_EOF'\n(.*?)\nNOTCH_ORIG_EOF\n", open(wrapper).read(), re.S)
-    if m: sl["command"] = m.group(1)
-open(sp, "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
+for ev in ASYNC + ["PermissionRequest"]:
+    c = {"type": "command", "command": HOOK, "statusMessage": MARK}
+    if ev == "PermissionRequest": c["timeout"] = 120
+    else: c.update({"timeout": 5, "async": True})
+    h.setdefault(ev, []).append({"matcher": "", "hooks": [c]})
+d["hooks"] = h
+if sl is not None and sl.get("command") == STATUS: pass
+elif sl is not None and "command" in sl:
+    open(os.path.join(tmp, "prev"), "w").write(sl["command"])
+    d["statusLine"] = dict(sl, command=STATUS)
+elif sl is not None: die('"statusLine" has no command')
+else: d["statusLine"] = {"type": "command", "command": STATUS}
+open(os.path.join(tmp, "new"), "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
 PY
-  rm -f "$HOOKS/notch-hook.sh" "$HOOKS/statusline-notch.sh"
-  echo "uninstalled $LABEL and notch hooks"
-  exit 0
+
+OLD="$SETTINGS"; [ -f "$SETTINGS" ] || OLD=/dev/null
+if cmp -s "$OLD" "$TMP/new"; then
+  echo "settings.json: already up to date"
+else
+  diff -u "$OLD" "$TMP/new" || true
+  if [ "$YES" != 1 ]; then
+    read -r -p "Write these changes to $SETTINGS? [y/N] " a
+    case "$a" in y|Y|yes) ;; *) echo "aborted, nothing changed"; exit 1 ;; esac
+  fi
 fi
 
-(cd "$DIR" && swift build -c release 2>&1 | tail -3) || exit 1
-
-# hooks step
-mkdir -p "$HOOKS" "$HOME/.claude/notch-events/perm" "$HOME/.claude/notch-events/ctx" "$HOME/.claude/backups"
-cp "$DIR/hooks/notch-hook.sh" "$DIR/hooks/statusline-notch.sh" "$HOOKS/" && chmod +x "$HOOKS"/notch-hook.sh "$HOOKS"/statusline-notch.sh
-BK="$HOME/.claude/backups/settings-pre-notch-$(date +%Y%m%d-%H%M%S).json"
-python3 - "$SETTINGS" "$BK" "$EVENTS" <<'PY'
-import json, sys, shutil
-sp, bk, evs = sys.argv[1], sys.argv[2], sys.argv[3].split()
-raw = open(sp).read()
-d = json.loads(raw)
-h = d.setdefault("hooks", {})
-def has(ev): return any(x.get("statusMessage") == "notch" for g in h.get(ev, []) for x in g.get("hooks", []))
-todo = [e for e in evs + ["PermissionRequest"] if not has(e)]
-sl = d.setdefault("statusLine", {"type": "command"})
-swap = "statusline-notch.sh" not in sl.get("command", "")
-if not todo and not swap:
-    print("hooks: already installed"); sys.exit(0)
-shutil.copy(sp, bk)
-for ev in todo:
-    cmd = {"type": "command", "command": "bash ~/.claude/hooks/notch-hook.sh", "statusMessage": "notch"}
-    if ev == "PermissionRequest": cmd["timeout"] = 120
-    else: cmd.update(async_=True, timeout=5)
-    if "async_" in cmd: cmd["async"] = cmd.pop("async_")
-    h.setdefault(ev, []).append({"matcher": "", "hooks": [cmd]})
-if swap: sl["command"] = "bash ~/.claude/hooks/statusline-notch.sh"
-open(sp, "w").write(json.dumps(d, indent=2, ensure_ascii=False) + "\n")
-print("hooks: installed (backup " + bk + ")")
-PY
+mkdir -p "$PEEK/bin" "$PEEK/events" "$PEEK/status"
+cp "$DIR/.build/release/peek-hook" "$PEEK/bin/peek-hook.new" && mv "$PEEK/bin/peek-hook.new" "$PEEK/bin/peek-hook"
+if ! cmp -s "$OLD" "$TMP/new"; then
+  # first install only: remember the pre-Peek file so uninstall can restore it byte for byte
+  if [ ! -f "$PEEK/settings-backup" ]; then
+    if [ -f "$SETTINGS" ]; then
+      mkdir -p "$HOME/.claude/backups"
+      BK="$HOME/.claude/backups/settings-pre-peek-$(date +%Y%m%d-%H%M%S).json"
+      cp -p "$SETTINGS" "$BK"; echo "$BK" > "$PEEK/settings-backup"; echo "backup: $BK"
+    else echo none > "$PEEK/settings-backup"; fi
+  fi
+  [ -f "$TMP/prev" ] && cp "$TMP/prev" "$PEEK/prev-statusline"
+  cp "$TMP/new" "$SETTINGS.peek-new" && mv "$SETTINGS.peek-new" "$SETTINGS"
+  shasum -a 256 "$SETTINGS" | cut -d' ' -f1 > "$PEEK/settings-sha"
+  echo "settings.json: updated"
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PL
@@ -73,5 +103,7 @@ cat > "$PLIST" <<PL
 <key>StandardErrorPath</key><string>/tmp/peek.log</string>
 </dict></plist>
 PL
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
-launchctl bootstrap "gui/$(id -u)" "$PLIST" && echo "installed $LABEL"
+if [ "${PEEK_NO_LAUNCHD:-0}" != 1 ]; then
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" && echo "installed $LABEL"
+fi

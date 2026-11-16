@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import PeekCore
 
 struct Job: Identifiable, Equatable, Sendable {
     let id: String
@@ -25,28 +26,10 @@ struct Job: Identifiable, Equatable, Sendable {
 }
 
 struct Perm: Equatable, Sendable {
-    var tool: String; var target: String; var path: String
+    var id: String; var tool: String; var target: String
     var headline = "", detail = "", allowAlways = true, allowLabel = "Allow", denyLabel = "Deny", always = ""
     var mono: Bool { tool == "Bash" || ["Edit", "Write", "NotebookEdit", "Read"].contains(tool) }
     var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
-}
-
-private struct Ev { var tool = "", ntype = "", msg = "", last = "", compacting = false }
-
-// ponytail: tolerant text field — any non-string value decodes to nil instead of failing the file
-private struct Txt: Decodable {
-    let s: String?
-    init(from d: Decoder) throws { s = try? d.singleValueContainer().decode(String.self) }
-}
-private struct Fan: Decodable { let kind: String?; let label: String?; let startedAt: Double? }
-private struct JobFile: Decodable {
-    let state: String, name: String, createdAt: String, updatedAt: String
-    let detail: Txt?, needs: Txt?, intent: Txt?
-    let cwd: String?, sessionId: String?
-    let fan: [Fan]?
-}
-private struct SessionFile: Decodable {
-    let pid: Int?, status: String?, statusUpdatedAt: Double?, kind: String?, name: String?, jobId: String?, spare: Bool?, startedAt: Double?, cwd: String?, sessionId: String?
 }
 
 @MainActor @Observable final class Store {
@@ -95,86 +78,130 @@ private struct SessionFile: Decodable {
         if v?.kind != alert?.kind || v?.text != alert?.text { alert = v }
     }
 
-    @ObservationIgnored private var cache: [String: (Date, JobFile?)] = [:]
-    @ObservationIgnored private let haiku = HaikuCache()
-    @ObservationIgnored private var firstMsg: [String: String] = [:]
+    /// Everything the rows need, folded from one session's events.
+    private struct Sess {
+        var cwd = "", title = "", prompt = "", state = "idle", tool = "", last = "", ntype = "", msg = ""
+        var recent: [String] = []
+        var compacting = false, ended = false
+        var agents = 0, pid = 0
+        var lastT = 0.0, stopT = 0.0
+    }
+    @ObservationIgnored private var sess: [String: Sess] = [:]
+    @ObservationIgnored private var offsets: [String: UInt64] = [:]
+    @ObservationIgnored private var pending: [String: [PermRequest]] = [:]
     @ObservationIgnored private var lastState: [String: String] = [:]
     @ObservationIgnored private var seeded = false
-    @ObservationIgnored private var startDetail: [String: String] = [:]
-    @ObservationIgnored private var evOffset: [String: UInt64] = [:]
-    @ObservationIgnored private var evBySid: [String: Ev] = [:]
+    @ObservationIgnored private var server: Server?
 
-    /// Tails ~/.claude/notch-events/*.jsonl by byte offset and folds new lines into per-session state.
-    private func tailEvents(_ dir: String) {
-        let fm = FileManager.default
+    private static let inputTypes: Set<String> = ["idle_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog", "permission_prompt"]
+    private static let reads: Set<String> = ["Read", "Grep", "Glob", "WebFetch", "WebSearch", "LS"]
+    private static let edits: Set<String> = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
+
+    /// "Edit main.swift", "Bash npm test", "Read Store.swift"
+    private static func toolLabel(_ tool: String, _ i: [String: Any]) -> String {
+        func s(_ k: String) -> String { i[k] as? String ?? "" }
+        let tg: String
+        if !s("file_path").isEmpty { tg = (s("file_path") as NSString).lastPathComponent }
+        else if !s("notebook_path").isEmpty { tg = (s("notebook_path") as NSString).lastPathComponent }
+        else if tool == "Bash" { tg = Eta.bash(s("command")) }
+        else if !s("pattern").isEmpty { tg = s("pattern") }
+        else if !s("url").isEmpty { tg = URL(string: s("url"))?.host ?? s("url") }
+        else { tg = s("query").isEmpty ? s("description") : s("query") }
+        return tg.isEmpty ? tool : "\(tool) \(String(tg.prefix(40)))"
+    }
+
+    private static func phase(_ recent: [String]) -> String {
+        guard let last = recent.last else { return "starting" }
+        if last.hasPrefix("Bash "), last.firstMatch(of: /(?i)test|build|lint|tsc|pytest/) != nil { return "verify" }
+        let names = recent.map { $0.split(separator: " ").first.map(String.init) ?? "" }
+        if names.filter({ reads.contains($0) }).count * 2 > names.count { return "plan" }
+        return "build"
+    }
+
+    private func fold(_ o: [String: Any], _ sid: String, rewound: Bool) {
+        guard let ev = o["ev"] as? String, let t = (o["t"] as? NSNumber)?.doubleValue else { return }
+        var s = sess[sid] ?? Sess()
+        if rewound && t <= s.lastT { return }  // file was trimmed and re-read: skip what we already folded
+        s.lastT = max(s.lastT, t)
+        if let c = o["cwd"] as? String, !c.isEmpty { s.cwd = c }
+        if let p = (o["pid"] as? NSNumber)?.intValue, p > 0 { s.pid = p }
+        if let n = o["session_title"] as? String, !n.isEmpty { s.title = n }
+        switch ev {
+        case "SessionStart": s.ended = false
+        case "UserPromptSubmit":
+            s.ended = false; s.state = "working"; s.tool = ""; s.last = ""; s.ntype = ""; s.msg = ""; s.recent = []; s.compacting = false
+            if s.prompt.isEmpty { s.prompt = o["prompt"] as? String ?? "" }
+        case "PreToolUse":
+            let tool = o["tool_name"] as? String ?? "", label = Store.toolLabel(tool, o["tool_input"] as? [String: Any] ?? [:])
+            s.state = "working"; s.tool = label; s.ntype = ""; s.msg = ""
+            s.recent = Array((s.recent + [label]).suffix(10))
+        case "PostToolUse", "PostToolUseFailure": s.state = "working"; s.tool = ""; s.ntype = ""; s.msg = ""
+        case "Notification": s.ntype = o["notification_type"] as? String ?? ""; s.msg = o["message"] as? String ?? ""
+        case "PreCompact": s.compacting = true
+        case "PostCompact": s.compacting = false
+        case "SubagentStart": s.agents += 1
+        case "SubagentStop": s.agents = max(0, s.agents - 1)
+        case "Stop": s.state = "done"; s.stopT = t; s.tool = ""; s.ntype = ""; s.msg = ""; s.agents = 0; s.compacting = false; s.last = o["last_assistant_message"] as? String ?? ""
+        case "StopFailure": s.state = "failed"; s.stopT = t; s.tool = ""; s.agents = 0; s.compacting = false
+        case "SessionEnd": s.ended = true
+        default: break
+        }
+        sess[sid] = s
+    }
+
+    /// Tails ~/.peek/events/*.jsonl by byte offset; a launch re-read from 0 rebuilds the same state.
+    private func tailEvents() {
+        let fm = FileManager.default, dir = PeekPaths.events
         for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where n.hasSuffix(".jsonl") {
             let path = "\(dir)/\(n)", sid = String(n.dropLast(6))
-            let size = ((try? fm.attributesOfItem(atPath: path))?[.size] as? UInt64) ?? 0
-            var off = evOffset[path] ?? 0
-            if size < off { off = 0 }  // hook truncated the file
+            guard let at = try? fm.attributesOfItem(atPath: path), let size = at[.size] as? UInt64 else { continue }
+            var off = offsets[path] ?? 0, rewound = false
+            if size < off { off = 0; rewound = true }  // the hook trimmed the file
+            if offsets[path] == nil, let m = at[.modificationDate] as? Date, Date().timeIntervalSince(m) > 1800 { offsets[path] = size; continue }  // cold file: no row to show
             guard size > off, let fh = FileHandle(forReadingAtPath: path) else { continue }
             defer { try? fh.close() }
             try? fh.seek(toOffset: off)
-            guard let data = try? fh.readToEnd() else { continue }
-            // only consume complete lines
-            guard let end = data.lastIndex(of: UInt8(ascii: "\n")) else { continue }
-            evOffset[path] = off + UInt64(end - data.startIndex + 1)
-            var e = evBySid[sid] ?? Ev()
+            guard let data = try? fh.readToEnd(), let end = data.lastIndex(of: UInt8(ascii: "\n")) else { continue }  // whole lines only
+            offsets[path] = off + UInt64(end - data.startIndex + 1)
             for l in data[data.startIndex..<end].split(separator: UInt8(ascii: "\n")) {
-                guard let o = try? JSONSerialization.jsonObject(with: Data(l)) as? [String: Any], let ev = o["ev"] as? String else { continue }
-                let tool = o["tool"] as? String ?? "", target = o["target"] as? String ?? ""
-                switch ev {
-                case "PreToolUse":
-                    let tg = tool == "Bash" ? Eta.bash(target) : target
-                    e.tool = tg.isEmpty ? tool : "\(tool) \(tg)"
-                    e.ntype = ""; e.msg = ""
-                case "PostToolUse", "Stop", "UserPromptSubmit":
-                    e.tool = ""
-                    if ev == "Stop" { e.last = o["last"] as? String ?? "" }
-                    if ev == "UserPromptSubmit" { e.last = "" }
-                    if ev != "PostToolUse" { e.ntype = ""; e.msg = "" }
-                case "Notification": e.ntype = o["ntype"] as? String ?? ""; e.msg = o["msg"] as? String ?? ""
-                case "PreCompact": e.compacting = true
-                case "PostCompact": e.compacting = false
-                default: break
-                }
+                if let o = try? JSONSerialization.jsonObject(with: Data(l)) as? [String: Any] { fold(o, sid, rewound: rewound) }
             }
-            evBySid[sid] = e
         }
-    }
-    private func ctxPct(_ sid: String?, _ home: String) -> Int? {
-        guard let sid, let s = try? String(contentsOfFile: "\(home)/.claude/notch-events/ctx/\(sid)", encoding: .utf8) else { return nil }
-        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Pending approvals: perm/<sid>-*.json with no sibling .reply.
-    private func pendingPerm(_ sid: String?, _ dir: String) -> Perm? {
-        guard let sid else { return nil }
-        let fm = FileManager.default
-        for n in ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).sorted() where n.hasPrefix(sid + "-") && n.hasSuffix(".json") {
-            let p = "\(dir)/\(n)"
-            let rp = String(p.dropLast(5)) + ".reply"
-            if let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, Date().timeIntervalSince(m) > 120, !fm.fileExists(atPath: rp) {
-                try? fm.removeItem(atPath: p); continue  // hook timed out long ago
-            }
-            guard !fm.fileExists(atPath: rp), let d = fm.contents(atPath: p),
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
-            let tool = o["tool_name"] as? String ?? "tool"
-            var tg = o["target"] as? String ?? ""
-            if tool == "Bash" { tg = Eta.bash(o["command"] as? String ?? tg) }
-            let a = Eta.approval(tool, o["input"] as? [String: Any] ?? ["command": o["command"] ?? "", "file_path": o["file_path"] ?? ""])
-            let w = ((o["command"] as? String ?? "").split(separator: " ").first).map(String.init) ?? ""
-            return Perm(tool: tool, target: tg, path: p, headline: a.headline, detail: a.detail, allowAlways: a.allowAlways,
-                        allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: tool == "Bash" && !w.isEmpty ? "always allow \(w)" : "always allow \(tool)")
-        }
-        return nil
+    private func statusFile(_ sid: String) -> (ctx: Int?, name: String) {
+        guard let d = FileManager.default.contents(atPath: "\(PeekPaths.status)/\(sid).json"),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return (nil, "") }
+        return ((o["ctx"] as? NSNumber)?.intValue, o["session_name"] as? String ?? "")
     }
+
+    private static func perm(_ r: PermRequest) -> Perm {
+        let a = Eta.approval(r.tool, r.input)
+        let w = ((r.input["command"] as? String ?? "").split(separator: " ").first).map(String.init) ?? ""
+        return Perm(id: r.id, tool: r.tool, target: Store.toolLabel(r.tool, r.input), headline: a.headline, detail: a.detail, allowAlways: a.allowAlways,
+                    allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: r.tool == "Bash" && !w.isEmpty ? "always allow \(w)" : "always allow \(r.tool)")
+    }
+
+    private func gone(_ id: String) {
+        for (sid, q) in pending where q.contains(where: { $0.id == id }) { pending[sid] = q.filter { $0.id != id }.nilIfEmpty }
+        refresh()
+    }
+    private func arrived(_ r: PermRequest) {
+        pending[r.sid, default: []].append(r)
+        var s = sess[r.sid] ?? Sess()
+        if s.cwd.isEmpty { s.cwd = r.cwd }
+        s.lastT = max(s.lastT, Date().timeIntervalSince1970 * 1000)
+        sess[r.sid] = s
+        refresh()
+    }
+
     @ObservationIgnored private var flashes: [String: (String, Date)] = [:]
     func reply(_ j: Job, _ verb: String) {
-        guard let p = j.perm else { return }
-        if verb == "open" { Focus.jump(j, store: self); return }
+        guard let p = j.perm, let r = pending[j.sid]?.first(where: { $0.id == p.id }) else { return }
+        if verb == "open" { r.answer(""); Focus.jump(j, store: self); refresh(); return }  // hang up: Claude Code shows its own dialog
         let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied") : ("always", "allowed")
-        try? body.write(toFile: String(p.path.dropLast(5)) + ".reply", atomically: true, encoding: .utf8)
+        r.answer(body)
+        pending[j.sid] = pending[j.sid]?.filter { $0.id != r.id }.nilIfEmpty
         flashes[j.id] = (label, Date().addingTimeInterval(3))
         refresh()
     }
@@ -182,15 +209,6 @@ private struct SessionFile: Decodable {
         flashes[id] = (text, Date().addingTimeInterval(secs)); refresh()
     }
     var replying: String?
-    private func sweepPerm(_ dir: String) {
-        let fm = FileManager.default
-        for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where n.hasSuffix(".reply") {
-            let p = "\(dir)/\(n)"
-            if let m = (try? fm.attributesOfItem(atPath: p))?[.modificationDate] as? Date, Date().timeIntervalSince(m) > 120 { try? fm.removeItem(atPath: p) }
-        }
-    }
-    private func ev(_ sid: String?) -> Ev { sid.flatMap { evBySid[$0] } ?? Ev() }
-    private static let inputTypes: Set<String> = ["idle_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog"]
 
     var running: Int { jobs.filter { $0.state == "working" || $0.needsYou }.count }
     var dotKind: String {
@@ -207,124 +225,37 @@ private struct SessionFile: Decodable {
     }
 
     init() {
+        let nudge: @Sendable () -> Void = { Task { @MainActor in self.refresh() } }
+        server = Server(onNudge: nudge, onPermission: { r in Task { @MainActor in self.arrived(r) } }, onGone: { id in Task { @MainActor in self.gone(id) } })
+        server?.start()
         refresh()
+        // slow fallback so a missed nudge self-heals (and done rows expire)
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated { self.refresh() }
         }
     }
 
-    private func load(_ path: String) -> JobFile? {
-        guard let m = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
-        if let c = cache[path], c.0 == m { return c.1 }
-        let f = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(JobFile.self, from: $0) }
-        cache[path] = (m, f)
-        return f
-    }
-
     func refresh() {
-        let now = Date()
-        let fm = FileManager.default
-        let home = NSHomeDirectory()
-
-        struct Sess { let status: String; let at: Double }
-        var sessByJob: [String: Sess] = [:], sessBySid: [String: Sess] = [:]
-        var sessions: [SessionFile] = []
-        let sd = home + "/.claude/sessions"
-        for n in (try? fm.contentsOfDirectory(atPath: sd)) ?? [] where n.hasSuffix(".json") {
-            guard let data = fm.contents(atPath: "\(sd)/\(n)"),
-                  let s = try? JSONDecoder().decode(SessionFile.self, from: data),
-                  s.spare != true, let pid = s.pid, kill(Int32(pid), 0) == 0 else { continue }
-            sessions.append(s)
-            let v = Sess(status: s.status ?? "", at: (s.statusUpdatedAt ?? 0) / 1000)
-            if let j = s.jobId { sessByJob[j] = v }
-            if let sid = s.sessionId { sessBySid[sid] = v }
-        }
-
-        tailEvents(home + "/.claude/notch-events")
-        let permDir = home + "/.claude/notch-events/perm"
-        sweepPerm(permDir)
+        let now = Date(), nowMs = now.timeIntervalSince1970 * 1000
+        tailEvents()
         flashes = flashes.filter { $0.value.1 > now }
         var rows: [Job] = []
-        var rowIDs = Set<String>(), known = Set<String>()
-        let jd = home + "/.claude/jobs"
-        for d in (try? fm.contentsOfDirectory(atPath: jd)) ?? [] {
-            guard let f = load("\(jd)/\(d)/state.json"),
-                  let updated = Eta.iso(f.updatedAt) else { continue }
-            known.insert(d)
-            let sess = sessByJob[d] ?? f.sessionId.flatMap { sessBySid[$0] }
-            var st = f.state
-            if let sess {
-                if sess.status == "busy" { st = "working" } else if sess.status == "waiting" { st = "blocked" }
-            }
-            let busy = sess?.status == "busy"
-            let last = max(updated.timeIntervalSince1970, sess?.at ?? 0)
-            let age = now.timeIntervalSince1970 - last
-            let show = (st == "working" && age < 900) || (st == "blocked" && age < 7200)
-                || ((st == "done" || st == "failed") && age < 60)
-            guard show else { continue }
-            let detail = f.detail?.s ?? ""
-            let newest = (f.fan ?? []).max { ($0.startedAt ?? 0) < ($1.startedAt ?? 0) }?.label ?? ""
-            let lastMsg = ev(f.sessionId).last
-            let lastSentence = lastMsg.split(whereSeparator: { ".!?\n".contains($0) }).first.map { Eta.clean(String($0), 12) } ?? ""
-            let text = detail.isEmpty ? (newest.isEmpty ? lastSentence : newest) : detail
-            let override = st == "working" && f.state != "working"
-            if override { if startDetail[d] == nil { startDetail[d] = detail } } else { startDetail[d] = nil }
-            let starting = override && startDetail[d] == detail
-            let phase = starting ? "starting" : Eta.phase(state: st, text: text)
-            let needs = f.needs?.s ?? ""
-            var doing = Eta.clean(text), ask = ""
-            if st == "working", !text.isEmpty {
-                let src = String(text.prefix(300))
-                haiku.request(id: d, key: src, prompt: "A coding task reports: \"\(src)\". Rewrite as one plain phrase under 8 words for a non-technical status board, present tense, no file names, paths, commands or code. Reply with the phrase only.")
-                doing = haiku.get(d, src) ?? doing
-            } else if st == "blocked" {
-                let src = String(needs.prefix(300))
-                ask = Eta.clean(needs, 8)
-                if !src.isEmpty {
-                    haiku.request(id: d, key: src, prompt: "A coding task is waiting on its user and says it needs: \"\(src)\". Rewrite as one plain question under 8 words. Reply with the question only.")
-                    ask = haiku.get(d, src) ?? ask
-                }
-            }
-            let e = ev(f.sessionId), perm = pendingPerm(f.sessionId, permDir)
-            let fl = flashes[d].map { $0.0 } ?? ""
+        for (sid, s) in sess {
+            let perm = pending[sid]?.first.map(Store.perm)
+            guard perm != nil || (!s.ended && nowMs - s.lastT < 1_800_000) else { continue }
+            let age = (nowMs - s.lastT) / 1000
+            var st = s.state
             if perm != nil { st = "approval" }
-            else if !busy && Store.inputTypes.contains(e.ntype) { st = "input" }
-            else if e.compacting { st = "compacting" }
-            else if st == "blocked" { st = "input" }
-            rows.append(Job(id: d, title: Eta.title(name: f.name, text: f.intent?.s ?? "", cwd: f.cwd), state: st, phase: phase,
-                            pct: starting ? 5 : Eta.pct(phase: phase, detail: detail),
-                            ask: ask, project: Eta.base(f.cwd), doing: doing,
-                            agents: (f.fan ?? []).filter { $0.kind == "agent" }.count,
-                            stuck: st == "working" && age > 120,
-                            tool: f.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
-                            ctxPct: ctxPct(f.sessionId, home),
-                            compacting: f.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: fl, sid: f.sessionId ?? ""))
-            rowIDs.insert(d)
-        }
-
-        for s in sessions where s.status == "busy" || s.status == "waiting" {
-            guard let pid = s.pid else { continue }
-            if let j = s.jobId {
-                if rowIDs.contains(j) { continue }
-                if s.kind == "bg" && known.contains(j) { continue }
-            }
-            let cwd = s.cwd ?? ""
-            var msg = ""
-            if let sid = s.sessionId, Eta.hashLike(s.name ?? "") {
-                if let c = firstMsg[sid] { msg = c } else { msg = Eta.firstUser(sessionId: sid, cwd: cwd); firstMsg[sid] = msg }
-            }
-            let e = ev(s.sessionId), perm = pendingPerm(s.sessionId, permDir), jid = "s\(pid)"
-            var st = s.status == "waiting" ? "input" : "working"
-            if perm != nil { st = "approval" }
-            else if s.status != "busy" && Store.inputTypes.contains(e.ntype) { st = "input" }
-            else if e.compacting { st = "compacting" }
-            rows.append(Job(id: jid, title: Eta.title(name: s.name ?? "", text: msg, cwd: cwd), state: st, phase: s.status == "waiting" ? "blocked" : "working",
-                            pct: 50, ask: "", project: Eta.base(cwd),
-                            tool: s.sessionId.flatMap { evBySid[$0]?.tool } ?? "",
-                            ctxPct: ctxPct(s.sessionId, home),
-                            compacting: s.sessionId.flatMap { evBySid[$0]?.compacting } ?? false,
-                            ntype: e.ntype, ask2: Eta.clean(e.msg, 8), perm: perm, flash: flashes[jid].map { $0.0 } ?? "", sid: s.sessionId ?? ""))
+            else if Store.inputTypes.contains(s.ntype) { st = "input" }
+            else if s.compacting { st = "compacting" }
+            if st == "idle" || ((st == "done" || st == "failed") && nowMs - s.stopT > 60_000) { continue }
+            let ph = st == "done" || st == "failed" ? st : Store.phase(s.recent)
+            let status = statusFile(sid)
+            let lastSentence = s.last.split(whereSeparator: { ".!?\n".contains($0) }).first.map { Eta.clean(String($0), 12) } ?? ""
+            rows.append(Job(id: sid, title: Eta.title(name: s.title.isEmpty ? status.name : s.title, text: s.prompt, cwd: s.cwd), state: st, phase: ph,
+                            pct: Eta.pct(phase: ph, detail: s.last), ask: "", project: Eta.base(s.cwd), doing: lastSentence, agents: s.agents,
+                            stuck: st == "working" && age > 120, tool: s.tool, ctxPct: status.ctx, compacting: s.compacting,
+                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid))
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }
@@ -358,3 +289,5 @@ private struct SessionFile: Decodable {
         syncOpen()
     }
 }
+
+private extension Array { var nilIfEmpty: [Element]? { isEmpty ? nil : self } }

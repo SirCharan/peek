@@ -2,14 +2,6 @@ import Foundation
 import PeekCore
 
 enum Eta {
-    // ponytail: one formatter, not Sendable-annotated; only used read-only
-    nonisolated(unsafe) private static let isoFrac: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
-    }()
-    nonisolated(unsafe) private static let isoPlain = ISO8601DateFormatter()
-
-    static func iso(_ s: String) -> Date? { isoFrac.date(from: s) ?? isoPlain.date(from: s) }
-
     /// Regex step parse: "step 2/5", "phase 2 of 5", then bare "2/5".
     static func step(_ detail: String) -> (Int, Int)? {
         var nm: (Int, Int)?
@@ -87,36 +79,9 @@ enum Eta {
         return String(words(t, n).prefix(40))
     }
 
-    static func phase(state: String, text: String) -> String {
-        if state == "blocked" { return "needs you" }
-        if state == "done" || state == "failed" { return state }
-        let t = text.lowercased()
-        if t.isEmpty { return "starting" }
-        func has(_ ks: [String]) -> Bool { ks.contains { t.contains($0) } }
-        if has(["test", "verif", "check", "lint", "gate", "screenshot", "spot-read", "confirm"]) { return "verify" }
-        if has(["report", "summar", "vault note", "wrap", "writing up"]) { return "report" }
-        if has(["plan", "interview", "explor", "inventor", "research", "reading", "look"]) { return "plan" }
-        return "build"
-    }
-
     static func pct(phase: String, detail: String) -> Int {
         if let (n, t) = step(detail) { return n * 100 / t }
         return ["starting": 5, "plan": 20, "build": 50, "verify": 75, "report": 90, "done": 100, "failed": 100][phase] ?? 50
-    }
-
-    /// First user message text of a session transcript (first 64KB only).
-    static func firstUser(sessionId: String, cwd: String) -> String {
-        let slug = cwd.replacingOccurrences(of: "/", with: "-")
-        guard let fh = FileHandle(forReadingAtPath: NSHomeDirectory() + "/.claude/projects/\(slug)/\(sessionId).jsonl") else { return "" }
-        defer { try? fh.close() }
-        let data = (try? fh.read(upToCount: 65536)) ?? Data()
-        for l in data.split(separator: UInt8(ascii: "\n")) {
-            guard let o = try? JSONSerialization.jsonObject(with: Data(l)) as? [String: Any], o["type"] as? String == "user",
-                  let m = o["message"] as? [String: Any] else { continue }
-            if let s = m["content"] as? String { return s }
-            if let a = m["content"] as? [[String: Any]] { return a.compactMap { $0["text"] as? String }.joined(separator: " ") }
-        }
-        return ""
     }
 }
 
