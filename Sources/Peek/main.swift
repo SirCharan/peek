@@ -160,6 +160,7 @@ final class NotchPanel: NSPanel {
 }
 
 let app = NSApplication.shared
+if let dir = ProcessInfo.processInfo.environment["PEEK_RENDER_MASCOT"] { MainActor.assumeIsolated { renderMascot(to: dir) }; exit(0) }
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

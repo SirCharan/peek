@@ -398,22 +398,6 @@ struct UsageFooter: View {
     }
 }
 
-/// 12pt two-frame glyph, 600 ms per frame.
-struct Buddy: View {
-    let kind: String
-    let tint: Color?
-    private static let frames: [String: (String, String)] = [
-        "working": ("◐", "◑"), "needs": ("(!)", "( )"), "done": ("✓", "✓"),
-        "compacting": ("◌", "◍"), "idle": ("·", "·"), "failed": ("✗", "✗")]
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.6)) { c in
-            let f = Buddy.frames[kind] ?? ("·", "·")
-            let on = Int(c.date.timeIntervalSinceReferenceDate / 0.6) % 2 == 0
-            Text(on ? f.0 : f.1).font(.system(size: 12, design: .monospaced)).foregroundStyle(tint ?? .white.opacity(0.7))
-        }
-    }
-}
-
 struct Wings: View {
     let store: Store
     let geo: Geo
@@ -434,7 +418,7 @@ struct Wings: View {
             .frame(width: Layout.wing, height: geo.notchH)
             Spacer(minLength: 0).frame(width: geo.notchW)
             HStack(spacing: 4) {
-                if !store.jobs.isEmpty { Buddy(kind: store.buddy, tint: al.map { $0.kind == "needs" ? amber : $0.kind == "done" ? .green : .red }) }
+                if !store.jobs.isEmpty { Mascot(state: MascotState(buddy: store.buddy), accent: al.map { $0.kind == "needs" ? amber : $0.kind == "done" ? .green : .red }, pointer: store.pointer) }
                 if let al {
                     let (label, col): (String, Color) = al.kind == "needs" ? ("NEEDS", amber) : al.kind == "done" ? ("DONE", .green) : ("FAILED", .red)
                     Text(label).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
@@ -463,8 +447,10 @@ struct Card: View {
         VStack(spacing: 0) {
             Wings(store: store, geo: geo)
             if store.shown.isEmpty {
-                Text("No Claude tasks running").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                    .frame(height: Layout.emptyH)
+                HStack(spacing: 8) {
+                    Mascot(state: .idle, accent: nil, pointer: store.pointer, scale: 1.8)
+                    Text("No Claude tasks running").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                }.frame(height: Layout.emptyH)
             }
             ForEach(store.shown.prefix(Layout.maxRows)) { j in
                 RowView(job: j, alerting: j.id == store.alertJobID, store: store)
