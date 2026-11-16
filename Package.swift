@@ -2,7 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "NotchTasks",
+    name: "Peek",
     platforms: [.macOS(.v14)],
-    targets: [.executableTarget(name: "NotchTasks", resources: [.copy("Sounds")])]
+    targets: [
+        .target(name: "PeekCore"),
+        .executableTarget(name: "peek-hook", dependencies: ["PeekCore"]),
+        .executableTarget(name: "Peek", dependencies: ["PeekCore"], resources: [.copy("Sounds")]),
+        .testTarget(name: "PeekCoreTests", dependencies: ["PeekCore"]),
+    ]
 )

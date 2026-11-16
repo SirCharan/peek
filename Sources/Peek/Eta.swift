@@ -1,4 +1,5 @@
 import Foundation
+import PeekCore
 
 enum Eta {
     // ponytail: one formatter, not Sendable-annotated; only used read-only
@@ -19,12 +20,7 @@ enum Eta {
         return (n, t)
     }
 
-    /// FNV-1a over UTF8 → stable hue 0...1.
-    static func hue(_ s: String) -> Double {
-        var h: UInt32 = 2166136261
-        for b in s.utf8 { h = (h ^ UInt32(b)) &* 16777619 }
-        return Double(h % 360) / 360
-    }
+    static func hue(_ s: String) -> Double { PeekHue.hue(s) }
 
     /// Bash label: drop leading `cd <path> && ` / `cd <path>; `, collapse whitespace, cap at 48.
     static func bash(_ c: String) -> String {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Writes needs/done/fail WAVs (44.1 kHz mono 16-bit, 180 ms) into Sources/NotchTasks/Sounds."""
+"""Writes needs/done/fail WAVs (44.1 kHz mono 16-bit, 180 ms) into Sources/Peek/Sounds."""
 import math, struct, wave, pathlib
 R, DUR, PEAK = 44100, 0.18, 0.4
-out = pathlib.Path(__file__).resolve().parent.parent / "Sources/NotchTasks/Sounds"
+out = pathlib.Path(__file__).resolve().parent.parent / "Sources/Peek/Sounds"
 out.mkdir(parents=True, exist_ok=True)
 
 def tone(f1, f2):
