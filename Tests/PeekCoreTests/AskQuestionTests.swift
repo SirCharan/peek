@@ -34,13 +34,15 @@ final class AskQuestionTests: XCTestCase {
         XCTAssertNil(AskQuestion.buildAnswers(questions: q.questions, selections: [[], ["Lint"]])["Which framework?"])
     }
 
-    func testAskOutputIsTheDocumentedJSON() throws {
-        let out = try XCTUnwrap(Hook.askOutput(questions: docsQuestions, reply: #"{"Which framework?":"React"}"#))
-        let want: NSDictionary = ["hookSpecificOutput": ["hookEventName": "PreToolUse", "permissionDecision": "allow",
-                                  "updatedInput": ["questions": docsQuestions, "answers": ["Which framework?": "React"]]]]
+    func testAskAnswerIsAPermissionRequestAllowWithUpdatedInput() throws {
+        let input: [String: Any] = ["questions": docsQuestions]
+        let out = try XCTUnwrap(Hook.decision(#"{"Which framework?":"React"}"#, tool: "AskUserQuestion", rawInput: input))
+        let want: NSDictionary = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": ["behavior": "allow",
+                                  "updatedInput": ["questions": docsQuestions, "answers": ["Which framework?": "React"]]]]]
         XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(out.utf8)) as? NSDictionary, want)
         XCTAssertFalse(out.contains("\n"))
-        XCTAssertNil(Hook.askOutput(questions: docsQuestions, reply: ""))
-        XCTAssertNil(Hook.askOutput(questions: docsQuestions, reply: "{}"))
+        XCTAssertNil(Hook.decision("", tool: "AskUserQuestion", rawInput: input))
+        XCTAssertNil(Hook.decision("{}", tool: "AskUserQuestion", rawInput: input))
+        XCTAssertNil(Hook.decision(#"{"a":"b"}"#, tool: "Bash", rawInput: input))  // answers JSON only means something for AskUserQuestion
     }
 }

@@ -183,6 +183,16 @@ struct Perm: Equatable, Sendable {
         default: break
         }
         sess[sid] = s
+        // a later event of the same session means its terminal prompt was answered there: hang up and drop the card
+        if let q = pending[sid], !q.isEmpty, ev != "PreToolUse" {
+            let tool = o["tool_name"] as? String ?? ""
+            let over = ["UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].contains(ev) || ((ev == "PostToolUse" || ev == "PostToolUseFailure") && q.contains { $0.tool == tool })
+            if over {
+                let done = q.filter { $0.t < t && (["PostToolUse", "PostToolUseFailure"].contains(ev) ? $0.tool == tool : true) }
+                for r in done { r.answer("") }
+                pending[sid] = q.filter { r in !done.contains { $0.id == r.id } }.nilIfEmpty
+            }
+        }
     }
 
     /// Tails ~/.peek/events/*.jsonl by byte offset; a launch re-read from 0 rebuilds the same state.
@@ -239,17 +249,11 @@ struct Perm: Equatable, Sendable {
         s.lastT = max(s.lastT, Date().timeIntervalSince1970 * 1000)
         sess[r.sid] = s
         refresh()
-        // the user is already looking at this session's terminal: hang up so it shows its own dialog; just bounce
-        guard let j = jobs.first(where: { $0.id == r.sid }) else { return }
-        Task {
-            if await Focus.isFront(j) { r.answer(""); bounceUntil = Date().addingTimeInterval(0.9); bounceTick += 1 }
-        }
     }
 
     @ObservationIgnored private var flashes: [String: (String, Date)] = [:]
     func reply(_ j: Job, _ verb: String) {
         guard let p = j.perm, let r = pending[j.sid]?.first(where: { $0.id == p.id }) else { return }
-        if verb == "open" { r.answer(""); Focus.jump(j, store: self); refresh(); return }  // hang up: Claude Code shows its own dialog
         let (body, label) = verb == "allow" ? ("allow", "allowed") : verb == "deny" ? ("deny:denied from notch", "denied")
             : verb.hasPrefix("deny:") ? (verb, "denied") : verb.hasPrefix("{") ? (verb, "answered") : ("always", "allowed")
         r.answer(body)

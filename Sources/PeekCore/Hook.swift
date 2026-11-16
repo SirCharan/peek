@@ -98,9 +98,10 @@ public enum Hook {
         return words.prefix(1).uppercased() + words.dropFirst()
     }
 
-    /// Reply verbs: `allow`, `always`, `deny` or `deny:<reason>`. nil = no decision (Claude Code shows its own dialog).
-    /// `always` becomes allow plus `updatedPermissions` (only when `always` is given, else a plain allow).
-    /// ExitPlanMode and AskUserQuestion need `updatedInput` with an allow, so the original input is echoed.
+    /// Reply verbs: `allow`, `always`, `deny` or `deny:<reason>`; for AskUserQuestion, the answers dict as one JSON object.
+    /// nil = no decision (Claude Code keeps its own prompt, which is already on screen). `always` becomes allow plus
+    /// `updatedPermissions` (only when `always` is given, else a plain allow). ExitPlanMode and AskUserQuestion need
+    /// `updatedInput` with an allow, so the original input is echoed (AskUserQuestion: plus `answers`).
     public static func decision(_ reply: String, tool: String = "", rawInput: [String: Any] = [:], always: [String: Any]? = nil) -> String? {
         var d: [String: Any]
         switch reply {
@@ -111,16 +112,12 @@ public enum Hook {
         case _ where reply == "deny" || reply.hasPrefix("deny:"):
             let m = reply.hasPrefix("deny:") ? String(reply.dropFirst(5)) : ""
             d = ["behavior": "deny", "message": m.isEmpty ? "Denied from the notch" : m]
+        case _ where tool == "AskUserQuestion" && reply.hasPrefix("{"):
+            guard let a = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any], !a.isEmpty else { return nil }
+            d = ["behavior": "allow", "updatedInput": rawInput.merging(["answers": a]) { _, new in new }]
         default: return nil
         }
         return line(["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": d]])
-    }
-
-    /// `--ask` output: allow the AskUserQuestion call with the original questions plus the answers the app sent.
-    public static func askOutput(questions: [[String: Any]], reply: String) -> String? {
-        guard let a = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any], !a.isEmpty else { return nil }
-        return line(["hookSpecificOutput": ["hookEventName": "PreToolUse", "permissionDecision": "allow",
-                                            "updatedInput": ["questions": questions, "answers": a]]])
     }
 
     /// Statusline stdin -> the small record the app reads from `~/.peek/status/<sid>.json`.

@@ -42,7 +42,7 @@ for ev, groups in h.items():
         if any(not isinstance(x, dict) for x in g.get("hooks", [])): die('hooks.%s has an unknown shape' % ev)
 sl = d.get("statusLine")
 if sl is not None and (not isinstance(sl, dict) or not isinstance(sl.get("command", ""), str)): die('"statusLine" has an unknown shape')
-# drop previous Peek entries, then add one fresh group per event
+# drop previous Peek entries (including the blocking `--ask` group older versions added), then add one fresh group per event
 for ev in list(h):
     for g in h[ev]: g["hooks"] = [x for x in g.get("hooks", []) if x.get("statusMessage") != MARK]
     h[ev] = [g for g in h[ev] if g.get("hooks") or "hooks" not in g]
@@ -52,8 +52,6 @@ for ev in ASYNC + ["PermissionRequest"]:
     if ev == "PermissionRequest": c["timeout"] = 120
     else: c.update({"timeout": 5, "async": True})
     h.setdefault(ev, []).append({"matcher": "", "hooks": [c]})
-# AskUserQuestion answered from the notch: blocking PreToolUse (the async PreToolUse group above only logs it)
-h.setdefault("PreToolUse", []).append({"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": HOOK + " --ask", "timeout": 130, "statusMessage": MARK}]})
 d["hooks"] = h
 if sl is not None and sl.get("command") == STATUS: pass
 elif sl is not None and "command" in sl:

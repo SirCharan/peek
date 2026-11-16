@@ -29,7 +29,6 @@ enum Eta {
         func name(_ p: String) -> String { (p as NSString).lastPathComponent }
         switch tool {
         case "ExitPlanMode": return ("asks you to approve its plan", planPreview(), false, "Approve plan", "Reject")
-        case "AskUserQuestion": return ("has a question for you", "", false, "Open", "Dismiss")
         case "Bash": return ("wants to run", bash(s("command")), true, "Allow", "Deny")
         case "Edit", "Write", "NotebookEdit": return ("wants to edit", name(s("file_path")), true, "Allow", "Deny")
         case "Read": return ("wants to read", name(s("file_path")), true, "Allow", "Deny")

@@ -86,7 +86,7 @@ struct ApprovalButtons: View {
             }.onAppear { reason = ""; notchPanel?.makeKey(); focus = true }
         } else {
         HStack(spacing: 6) {
-            Button { store.reply(job, p?.tool == "AskUserQuestion" ? "open" : "allow") } label: {
+            Button { store.reply(job, "allow") } label: {
                 Text(p?.allowLabel ?? "Allow").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
                     .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber)).contentShape(Capsule())
             }.buttonStyle(.plain)
@@ -257,7 +257,8 @@ struct RowView: View {
     }
 }
 
-/// AskUserQuestion held by `peek-hook --ask`: 1-4 questions, single or multi select, a free-text Other line, Submit, or hand back to the terminal.
+/// AskUserQuestion, answerable here while the terminal shows the same question: 1-4 questions, single or multi select, a free-text Other line, Submit.
+/// Whichever side answers first wins.
 struct QuestionCard: View {
     let job: Job
     let ask: AskQuestion
@@ -311,10 +312,6 @@ struct QuestionCard: View {
             }
             HStack(spacing: 6) {
                 Spacer(minLength: 0)
-                Button { notchPanel?.resignKey(); store.reply(job, "open") } label: {
-                    Text("Reply in terminal").font(.system(size: 11)).foregroundStyle(.white)
-                        .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(.white.opacity(0.2))).contentShape(Capsule())
-                }.buttonStyle(.plain)
                 Button { submit() } label: {
                     Text("Submit").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
                         .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber.opacity(complete ? 1 : 0.35))).contentShape(Capsule())

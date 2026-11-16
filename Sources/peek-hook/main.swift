@@ -42,18 +42,8 @@ if CommandLine.arguments.contains("--statusline") {
 let ppid = getppid()
 guard var ev = Hook.event(raw, pid: ppid, tty: "", env: ProcessInfo.processInfo.environment) else { exit(0) }
 
-// MARK: --ask (PreToolUse on AskUserQuestion): the app shows the questions; on any failure print nothing so the terminal asks.
-if CommandLine.arguments.contains("--ask") {
-    guard raw["tool_name"] as? String == "AskUserQuestion", let qs = (raw["tool_input"] as? [String: Any])?["questions"] as? [[String: Any]],
-          let fd = PeekSocket.connect(PeekPaths.sock, timeout: 0.3) else { exit(0) }
-    ev["ev"] = "AskUserQuestion"; ev["tty"] = tty(of: ppid)
-    guard let l = Hook.line(ev), PeekSocket.send(fd, l), let reply = PeekSocket.readLine(fd, timeout: 125),
-          let out = Hook.askOutput(questions: qs, reply: reply) else { exit(0) }
-    print(out)
-    exit(0)
-}
-
-// MARK: PermissionRequest: ask the app over the socket; on any failure print nothing so Claude Code asks itself.
+// MARK: PermissionRequest (also fired for AskUserQuestion): ask the app over the socket while Claude Code shows its own prompt.
+// Print nothing on any failure, so the terminal prompt stays the only one.
 if ev["ev"] as? String == "PermissionRequest" {
     guard let fd = PeekSocket.connect(PeekPaths.sock, timeout: 0.3) else { exit(0) }
     let always = Hook.always(raw["permission_suggestions"] as? [[String: Any]] ?? [])

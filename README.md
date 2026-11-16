@@ -2,6 +2,8 @@
 
 A macOS notch overlay that shows your Claude Code sessions and lets you answer them without switching windows.
 
+Peek never delays or replaces the terminal's own prompts: Claude Code asks in the terminal exactly as it does without Peek, and Peek shows the same prompt next to it.
+
 *Peek sits in the notch, stays out of the way, and speaks up when Claude Code needs you.*
 
 ![The Peek character in five states: idle, working, needs, done and failed](docs/states.png)
@@ -13,8 +15,9 @@ A macOS notch overlay that shows your Claude Code sessions and lets you answer t
 - Shows a small one-eyed character. Its pupil follows your cursor and changes with the state of your sessions.
 - Expands into a card with one row per session: title, the current tool or latest edit (`file +N −M`), and context usage in percent.
 - Jumps to the session's terminal when you click its row.
-- Approves, denies (with a typed reason) or always-allows permission requests.
-- Answers Claude's multiple-choice questions from the notch, or sends them back to the terminal.
+- Shows each permission request and multiple-choice question in the notch while the terminal shows it too. You can answer in either place, and the first answer counts.
+- Approves, denies (with a typed reason) or always-allows permission requests from the notch.
+- Answers Claude's multiple-choice questions from the notch.
 - Approves plans from the notch.
 - Shows your 5-hour and weekly plan usage in the footer.
 - Offers global hotkeys, custom sounds, a settings window and a choice of display.
@@ -64,7 +67,7 @@ All five are global and can be changed or cleared in Settings.
 | Control Option P | Open or close the card |
 | Control Option M | Mute or unmute sounds |
 
-Allow and Deny only answer when it is clear which request you mean. Multiple-choice questions are never answered by hotkey.
+Allow and Deny only answer when it is clear which request you mean. Multiple-choice questions are never answered by hotkey. The terminal's own prompt is always on screen too, so you can answer there instead.
 
 ## Terminals
 
@@ -84,11 +87,11 @@ Peek has three sounds: `needs`, `done` and `fail`. Put a file with one of those 
 Peek reads only the official Claude Code hooks. `install.sh` registers the `peek-hook` binary for these events:
 
 - Logged without blocking: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`, `SessionEnd`.
-- Blocking: `PermissionRequest`, plus a second `PreToolUse` hook that matches `AskUserQuestion`.
+- Held while the terminal asks: `PermissionRequest`. Claude Code also fires it for multiple-choice questions (`AskUserQuestion`), so one hook covers both.
 
-Non-blocking events are appended to `~/.peek/events/<session>.jsonl`. Blocking ones go to the app over the Unix socket `~/.peek/peek.sock`, and the app's answer goes back to Claude Code as the hook's decision. "Always" reuses the suggestion Claude Code sends with the request, so the rule is saved the way Claude Code would save it.
+Non-blocking events are appended to `~/.peek/events/<session>.jsonl`. A `PermissionRequest` goes to the app over the Unix socket `~/.peek/peek.sock`, while Claude Code shows its own prompt in the terminal. If you answer in Peek, the hook returns your answer and Claude Code closes its prompt and carries on. If you answer in the terminal first, Peek sees the session's next event, drops its card and hangs up on the hook, which prints nothing. "Always" reuses the suggestion Claude Code sends with the request, so the rule is saved the way Claude Code would save it.
 
-If Peek is not running, the hook finds no socket, prints nothing and exits. Claude Code then behaves as if Peek were not installed.
+If Peek is not running, the hook finds no socket, prints nothing and exits. Claude Code then behaves as if Peek were not installed. The hook waits at most about two minutes for Peek, and a missing answer never blocks the terminal.
 
 ## Privacy
 
@@ -103,6 +106,8 @@ Under `~/.peek/` it stores:
 
 ## Known limits
 
+- Answering from the notch relies on Claude Code honouring a hook's answer after its own prompt is already showing. That holds in Claude Code 2.1.325, but the documentation does not promise it. If a later version changes this, answer in the terminal.
+- Peek learns that you answered in the terminal from the session's next event, so its card can linger for a moment after you answer there.
 - Multi-select answers are sent as a comma-joined string, as the Claude Code docs describe. Some versions may want an array. If so, flip the constant `AskQuestion.multiSelectAsArray` in `Sources/PeekCore/AskQuestion.swift`.
 - Launch at login comes from the LaunchAgent that `install.sh` writes. There is no switch for it in System Settings. The Settings window reports whether the LaunchAgent exists.
 
