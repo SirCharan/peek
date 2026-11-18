@@ -28,7 +28,7 @@ enum Eta {
         func s(_ k: String) -> String { input[k] as? String ?? "" }
         func name(_ p: String) -> String { (p as NSString).lastPathComponent }
         switch tool {
-        case "ExitPlanMode": return ("asks you to approve its plan", planPreview(), false, "Approve plan", "Reject")
+        case "ExitPlanMode": return ("asks you to approve its plan", s("plan").isEmpty ? "plan text not available, see the terminal" : s("plan"), false, "Approve", "Keep planning")
         case "Bash": return ("wants to run", bash(s("command")), true, "Allow", "Deny")
         case "Edit", "Write", "NotebookEdit": return ("wants to edit", name(s("file_path")), true, "Allow", "Deny")
         case "Read": return ("wants to read", name(s("file_path")), true, "Allow", "Deny")
@@ -43,34 +43,11 @@ enum Eta {
         }
     }
 
-    /// First 3 non-empty lines after the H1 of the newest plan file touched in the last 15 min.
-    static func planPreview() -> String {
-        let fm = FileManager.default
-        let dir = NSHomeDirectory() + "/.claude/plans"
-        let files = ((try? fm.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".md") }.compactMap { n -> (String, Date)? in
-            guard let m = (try? fm.attributesOfItem(atPath: "\(dir)/\(n)"))?[.modificationDate] as? Date, Date().timeIntervalSince(m) < 900 else { return nil }
-            return ("\(dir)/\(n)", m)
-        }
-        guard let f = files.max(by: { $0.1 < $1.1 })?.0, let t = try? String(contentsOfFile: f, encoding: .utf8) else { return "(plan file not found)" }
-        var lines = t.split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
-        if let i = lines.firstIndex(where: { $0.hasPrefix("# ") }) { lines = Array(lines[(i + 1)...]) }
-        let p = lines.filter { !$0.isEmpty && !$0.hasPrefix("#") }.prefix(3).joined(separator: " · ")
-        return p.isEmpty ? "(plan file not found)" : String(p.prefix(160))
-    }
-
-    static func hashLike(_ s: String) -> Bool { s.isEmpty || s.wholeMatch(of: /[0-9a-f]{8}/) != nil }
     static func base(_ cwd: String?) -> String {
         guard let c = cwd, !c.isEmpty else { return "" }
         return c == NSHomeDirectory() ? "~" : (c as NSString).lastPathComponent
     }
     static func words(_ s: String, _ n: Int) -> String { s.split(whereSeparator: \.isWhitespace).prefix(n).joined(separator: " ") }
-
-    /// name, else first 5 words of text (intent / first user message), else cwd basename.
-    static func title(name: String, text: String, cwd: String?) -> String {
-        if !hashLike(name) { return name }
-        let w = words(text, 5)
-        return w.isEmpty ? base(cwd) : w
-    }
 
     static func clean(_ s: String, _ n: Int = 6) -> String {
         let t = s.replacing(/`[^`]*`/, with: "").split(whereSeparator: \.isWhitespace)

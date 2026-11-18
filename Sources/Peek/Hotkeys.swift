@@ -62,7 +62,7 @@ private func peekHotKeyHandler(_: EventHandlerCallRef?, _ event: EventRef?, _: U
 }
 
 extension Store {
-    /// What each hotkey does. Allow/Deny answer only when it is unambiguous; AskUserQuestion cards are never answered here.
+    /// What each hotkey does. Allow/Deny answer only when it is unambiguous; AskUserQuestion and plan cards are never answered here.
     func hotkey(_ a: HotkeyAction) {
         switch a {
         case .mute: Sounds.muted.toggle()
@@ -73,7 +73,7 @@ extension Store {
         case .allow, .deny:
             guard let j = jobs.first(where: { $0.perm != nil }), let p = j.perm else { return }
             let visible = open && shown.prefix(Layout.maxRows).contains { $0.id == j.id }
-            if p.ask != nil { if !open { toggleCard() }; return }
+            if p.ask != nil || p.tool == "ExitPlanMode" { if !open { toggleCard() }; return }
             if visible || pendingCount == 1 { reply(j, a == .allow ? "allow" : "deny") }
             else if !open { toggleCard() }
         }

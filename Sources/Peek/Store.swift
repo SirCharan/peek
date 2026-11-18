@@ -23,6 +23,7 @@ struct Job: Identifiable, Equatable, Sendable {
     var ntype = ""
     var ask2 = ""
     var perm: Perm?
+    var mirror: PromptMirror?
     var flash = ""
     var sid = ""
     var edit: FileDiff?
@@ -35,8 +36,11 @@ struct Perm: Equatable, Sendable {
     var id: String; var tool: String; var target: String
     var headline = "", detail = "", allowAlways = true, allowLabel = "Allow", denyLabel = "Deny", always = ""
     var ask: AskQuestion?
+    /// ExitPlanMode: this request's own plan text ("" when the hook did not carry it).
+    var plan = ""
+    var fromAgent = false
     var mono: Bool { tool == "Bash" || ["Edit", "Write", "NotebookEdit", "Read"].contains(tool) }
-    var tall: Bool { tool == "ExitPlanMode" && detail.count > 55 }
+    var planCard: Bool { tool == "ExitPlanMode" && !plan.isEmpty }
     /// "Always" for an allow rule; the mode name ("Accept edits") when Always would switch permission mode.
     var alwaysButton: String { Hook.alwaysButton(always) }
 }
@@ -99,7 +103,7 @@ struct Perm: Equatable, Sendable {
     private func updateAlert() {
         func t(_ k: String, _ l: String) -> (kind: String, text: String, key: String)? {
             jobs.first { (k == "needs" ? $0.needsYou : $0.state == k) && !acked.contains("\($0.id)|\($0.state)") }
-                .map { (k, "\(l) · \($0.title.prefix(18))", "\($0.id)|\($0.state)") }
+                .map { (k, "\(l) · \(SessionTitle.short($0.title, 24))", "\($0.id)|\($0.state)") }
         }
         let al = t("needs", "NEEDS YOU") ?? t("done", "DONE") ?? t("failed", "FAILED")
         alertKey = al?.key
@@ -111,6 +115,7 @@ struct Perm: Equatable, Sendable {
     private struct Sess {
         var cwd = "", title = "", prompt = "", state = "idle", tool = "", last = "", ntype = "", msg = ""
         var recent: [String] = []
+        var mirrors: [PromptMirror] = []
         var compacting = false, ended = false
         var edit: FileDiff?
         var agents = 0
@@ -121,6 +126,7 @@ struct Perm: Equatable, Sendable {
     @ObservationIgnored private var offsets: [String: UInt64] = [:]
     @ObservationIgnored private var pending: [String: [PermRequest]] = [:]
     @ObservationIgnored private var lastState: [String: String] = [:]
+    @ObservationIgnored private var titles: [String: (title: String, source: SessionTitle.Source)] = [:]
     @ObservationIgnored private var seeded = false
     @ObservationIgnored private var server: Server?
 
@@ -154,17 +160,24 @@ struct Perm: Equatable, Sendable {
         var s = sess[sid] ?? Sess()
         if rewound && t <= s.lastT { return }  // file was trimmed and re-read: skip what we already folded
         s.lastT = max(s.lastT, t)
-        if let c = o["cwd"] as? String, !c.isEmpty { s.cwd = c }
-        if let p = (o["pid"] as? NSNumber)?.intValue, p > 0 { s.term.pid = p }
-        for (k, kp) in [("tty", \TermId.tty), ("tp", \TermId.tp), ("bid", \TermId.bid), ("itsid", \TermId.itsid)] {
-            if let v = o[k] as? String, !v.isEmpty { s.term[keyPath: kp] = v }
+        // a subagent shares the session id but not its name, folder or first prompt
+        let agent = o["agent_id"] as? String ?? ""
+        if agent.isEmpty {
+            if let c = o["cwd"] as? String, !c.isEmpty { s.cwd = c }
+            if let p = (o["pid"] as? NSNumber)?.intValue, p > 0 { s.term.pid = p }
+            for (k, kp) in [("tty", \TermId.tty), ("tp", \TermId.tp), ("bid", \TermId.bid), ("itsid", \TermId.itsid)] {
+                if let v = o[k] as? String, !v.isEmpty { s.term[keyPath: kp] = v }
+            }
+            if let n = o["session_title"] as? String, !n.isEmpty { s.title = n }
         }
-        if let n = o["session_title"] as? String, !n.isEmpty { s.title = n }
+        let tool0 = o["tool_name"] as? String ?? ""
+        s.mirrors.removeAll { PromptMirror.clears(ev: ev, tool: tool0, evAgent: agent, promptTool: $0.tool, promptAgent: $0.agent) }
+        if let m = PromptMirror.make(o) { s.mirrors.removeAll { $0.tool == m.tool && $0.agent == m.agent }; s.mirrors.append(m) }
         switch ev {
         case "SessionStart": s.ended = false
         case "UserPromptSubmit":
             s.ended = false; s.state = "working"; s.tool = ""; s.last = ""; s.ntype = ""; s.msg = ""; s.recent = []; s.compacting = false; s.edit = nil
-            if s.prompt.isEmpty { s.prompt = o["prompt"] as? String ?? "" }
+            if agent.isEmpty, s.prompt.isEmpty, let p = SessionTitle.prompt(o["prompt"] as? String ?? "") { s.prompt = p }
         case "PreToolUse":
             let tool = o["tool_name"] as? String ?? "", label = Store.toolLabel(tool, o["tool_input"] as? [String: Any] ?? [:])
             s.state = "working"; s.tool = label; s.ntype = ""; s.msg = ""; s.edit = nil
@@ -186,9 +199,8 @@ struct Perm: Equatable, Sendable {
         // a later event of the same session means its terminal prompt was answered there: hang up and drop the card
         if let q = pending[sid], !q.isEmpty, ev != "PreToolUse" {
             let tool = o["tool_name"] as? String ?? ""
-            let over = ["UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"].contains(ev) || ((ev == "PostToolUse" || ev == "PostToolUseFailure") && q.contains { $0.tool == tool })
-            if over {
-                let done = q.filter { $0.t < t && (["PostToolUse", "PostToolUseFailure"].contains(ev) ? $0.tool == tool : true) }
+            let done = q.filter { $0.t < t && PromptMirror.clears(ev: ev, tool: tool, evAgent: agent, promptTool: $0.tool, promptAgent: $0.agent) }
+            if !done.isEmpty {
                 for r in done { r.answer("") }
                 pending[sid] = q.filter { r in !done.contains { $0.id == r.id } }.nilIfEmpty
             }
@@ -234,8 +246,9 @@ struct Perm: Equatable, Sendable {
 
     private static func perm(_ r: PermRequest) -> Perm {
         let a = Eta.approval(r.tool, r.input)
-        return Perm(id: r.id, tool: r.tool, target: Store.toolLabel(r.tool, r.input), headline: a.headline, detail: a.detail,
-                    allowAlways: a.allowAlways && !r.always.isEmpty, allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: r.always, ask: r.ask)
+        return Perm(id: r.id, tool: r.tool, target: Store.toolLabel(r.tool, r.input), headline: (r.agent.isEmpty ? "" : "(subagent) ") + a.headline, detail: a.detail,
+                    allowAlways: a.allowAlways && !r.always.isEmpty, allowLabel: a.allowLabel, denyLabel: a.denyLabel, always: r.always, ask: r.ask,
+                    plan: r.tool == "ExitPlanMode" ? r.input["plan"] as? String ?? "" : "", fromAgent: !r.agent.isEmpty)
     }
 
     private func gone(_ id: String) {
@@ -297,21 +310,34 @@ struct Perm: Equatable, Sendable {
         flashes = flashes.filter { $0.value.1 > now }
         var rows: [Job] = []
         for (sid, s) in sess {
-            let perm = pending[sid]?.first.map(Store.perm)
+            let held = pending[sid] ?? []
+            let perm = held.first.map(Store.perm)
+            let heldTools = Set(held.map(\.tool))
+            let mirror = perm == nil ? s.mirrors.filter { $0.visible(heldTools: heldTools, nowMs: nowMs) }.min { $0.t < $1.t } : nil
             guard perm != nil || (!s.ended && nowMs - s.lastT < 1_800_000) else { continue }
             let age = (nowMs - s.lastT) / 1000
             var st = s.state
             if perm != nil { st = "approval" }
+            else if mirror != nil { st = "input" }
             else if Store.inputTypes.contains(s.ntype) { st = "input" }
             else if s.compacting { st = "compacting" }
             if st == "idle" || ((st == "done" || st == "failed") && nowMs - s.stopT > 60_000) { continue }
             let ph = st == "done" || st == "failed" ? st : Store.phase(s.recent)
             let status = statusFile(sid)
-            let lastSentence = s.last.split(whereSeparator: { ".!?\n".contains($0) }).first.map { Eta.clean(String($0), 12) } ?? ""
-            rows.append(Job(id: sid, title: Eta.title(name: s.title.isEmpty ? status.name : s.title, text: s.prompt, cwd: s.cwd), state: st, phase: ph,
+            let lastSentence = SessionTitle.sentence(s.last, 60)
+            let t = SessionTitle.pick(name: status.name.isEmpty ? s.title : status.name, prompt: s.prompt, cwdBase: Eta.base(s.cwd), previous: titles[sid])
+            titles[sid] = t
+            // idle prompt: say what it is waiting for instead of the generic message
+            let waiting = s.ntype == "idle_prompt" && !lastSentence.isEmpty ? lastSentence : Eta.clean(s.msg, 8)
+            rows.append(Job(id: sid, title: t.title, state: st, phase: ph,
                             pct: Eta.pct(phase: ph, detail: s.last), ask: "", project: Eta.base(s.cwd), doing: lastSentence, agents: s.agents,
                             stuck: st == "working" && age > 120, tool: s.tool, ctxPct: status.ctx, compacting: s.compacting,
-                            ntype: s.ntype, ask2: Eta.clean(s.msg, 8), perm: perm, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit, term: s.term, lastT: s.lastT))
+                            ntype: s.ntype, ask2: waiting, perm: perm, mirror: mirror, flash: flashes[sid].map { $0.0 } ?? "", sid: sid, edit: s.edit, term: s.term, lastT: s.lastT))
+            // further held requests of the same session wait behind the first, oldest first
+            for (n, r) in held.dropFirst().enumerated() {
+                rows.append(Job(id: "\(sid)~\(n + 2)", title: t.title, state: "approval", phase: ph, pct: 0, ask: "", project: Eta.base(s.cwd), perm: Store.perm(r),
+                                sid: sid, term: s.term, lastT: s.lastT))
+            }
         }
 
         func w(_ j: Job) -> Int { j.needsYou ? 0 : j.state == "working" ? 1 : 2 }

@@ -128,4 +128,22 @@ final class HookTests: XCTestCase {
         let n = try XCTUnwrap(Hook.status(["session_id": "s2", "context_window": ["used_percentage": NSNull()]]))
         XCTAssertNil((try JSONSerialization.jsonObject(with: n.json) as? [String: Any])?["ctx"])
     }
+
+    func testEventKeepsPlanTextModeAndAgent() throws {
+        let plan = String(repeating: "x", count: 9000)
+        let raw: [String: Any] = ["session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "ExitPlanMode", "permission_mode": "plan", "agent_id": "a1",
+                                  "tool_input": ["plan": plan, "planFilePath": "/p/plan.md"]]
+        let o = try XCTUnwrap(Hook.event(raw, pid: 1, tty: ""))
+        let i = try XCTUnwrap(o["tool_input"] as? [String: Any])
+        XCTAssertEqual((i["plan"] as? String)?.utf8.count, Hook.planCap)
+        XCTAssertEqual(i["planFilePath"] as? String, "/p/plan.md")
+        XCTAssertEqual(o["permission_mode"] as? String, "plan")
+        XCTAssertEqual(o["agent_id"] as? String, "a1")
+    }
+
+    func testPlanDenyDefaultsToKeepPlanning() throws {
+        let out = try XCTUnwrap(Hook.decision("deny", tool: "ExitPlanMode"))
+        XCTAssertTrue(out.contains("keep planning"))
+        XCTAssertTrue(try XCTUnwrap(Hook.decision("deny", tool: "Bash")).contains("Denied from the notch"))
+    }
 }

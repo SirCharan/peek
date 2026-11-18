@@ -32,6 +32,18 @@ if [ -f "$L" ] && [ "$(wc -l < "$L")" -eq 1 ] && python3 -c 'import json,sys; o=
   ok "(b) event line written"
 else bad "(b) event line"; fi
 
+# (b2) ExitPlanMode PreToolUse keeps the plan (capped at 8 KB), the permission mode and the subagent id for the read-only mirror
+PLANPRE="$(python3 -c 'import json; print(json.dumps({"session_id":"sid-plan","cwd":"/w","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","permission_mode":"plan","agent_id":"ag1","tool_input":{"plan":"x"*9000,"planFilePath":"/p.md"}}))')"
+echo "$PLANPRE" | "$HOOK"
+python3 - "$HOME/.peek/events/sid-plan.jsonl" <<'PY' && ok "(b2) plan text capped, mode and agent_id kept" || bad "(b2) plan event"
+import json, sys
+o = json.loads(open(sys.argv[1]).readline())
+assert len(o["tool_input"]["plan"]) == 8192 and o["tool_input"]["planFilePath"] == "/p.md" and o["permission_mode"] == "plan" and o["agent_id"] == "ag1", o
+PY
+QPRE='{"session_id":"sid-q","cwd":"/w","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which?","options":[{"label":"A"},{"label":"B"}]}]}}'
+echo "$QPRE" | "$HOOK"
+grep -q '"question":"Which?"' "$HOME/.peek/events/sid-q.jsonl" && ok "(b2) question kept in the event" || bad "(b2) question event"
+
 # (c) stub socket: allow -> plain decision JSON; always (with a permission_suggestion) -> allow + updatedPermissions; ExitPlanMode allow echoes input
 SOCK="$HOME/.peek/peek.sock"
 python3 - "$SOCK" <<'PY' &

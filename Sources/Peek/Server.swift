@@ -11,6 +11,8 @@ final class PermRequest: @unchecked Sendable {
     var t = 0.0
     /// Tooltip for the Always button ("" = the request carried no permission suggestion, so no Always).
     var always = ""
+    /// Empty for the main session; a subagent's id when the request came from one.
+    var agent = ""
     /// Set for an AskUserQuestion; the answer is the answers dict as one JSON line.
     var ask: AskQuestion?
     private let lock = NSLock()
@@ -92,6 +94,7 @@ final class Server: @unchecked Sendable {
         let input = o["tool_input"] as? [String: Any] ?? [:]
         let req = PermRequest(sid: sid, tool: o["tool_name"] as? String ?? "tool", cwd: o["cwd"] as? String ?? "", input: input)
         req.always = o["always"] as? String ?? ""
+        req.agent = o["agent_id"] as? String ?? ""
         req.t = (o["t"] as? NSNumber)?.doubleValue ?? Date().timeIntervalSince1970 * 1000
         if req.tool == "AskUserQuestion" {
             guard let q = AskQuestion.parse(toolInput: input) else { close(fd); return }  // malformed: hang up, the terminal prompt stays the only one

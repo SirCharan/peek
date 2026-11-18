@@ -13,6 +13,7 @@ public enum PeekPaths {
 
 public enum Hook {
     static let bigCap = 20_000
+    static let planCap = 8_192
 
     static func cap(_ s: String, _ n: Int) -> String { String(s.prefix(n)) }
     static func capBytes(_ s: String, _ n: Int) -> String {
@@ -31,6 +32,10 @@ public enum Hook {
         for k in ["file_path", "notebook_path", "pattern", "url", "query", "path"] { if let s = i[k] as? String { o[k] = cap(s, 300) } }
         for k in ["command", "description"] { if let s = i[k] as? String { o[k] = cap(s, 120) } }
         if tool == "AskUserQuestion", let q = i["questions"], let d = try? JSONSerialization.data(withJSONObject: q), d.count < 16_000 { o["questions"] = q }
+        if tool == "ExitPlanMode" {
+            if let s = i["plan"] as? String { o["plan"] = capBytes(s, planCap) }
+            if let s = i["planFilePath"] as? String { o["planFilePath"] = cap(s, 300) }
+        }
         guard ["Edit", "Write", "MultiEdit"].contains(tool) else { return o }
         for k in ["old_string", "new_string", "content"] { if let s = i[k] as? String { o[k] = capBytes(s, bigCap) } }
         if let es = i["edits"] as? [[String: Any]] {
@@ -66,7 +71,8 @@ public enum Hook {
         if let s = raw["session_title"] as? String, !s.isEmpty { o["session_title"] = cap(s, 200) }
         if let s = raw["notification_type"] as? String { o["notification_type"] = s }
         if let s = raw["message"] as? String { o["message"] = cap(s, 200) }
-        if let s = raw["agent_id"] as? String { o["agent_id"] = s }
+        if let s = raw["agent_id"] as? String, !s.isEmpty { o["agent_id"] = s }
+        if let s = raw["permission_mode"] as? String { o["permission_mode"] = cap(s, 32) }
         return o
     }
 
@@ -111,7 +117,8 @@ public enum Hook {
             if reply == "always", let always { d["updatedPermissions"] = [always] }
         case _ where reply == "deny" || reply.hasPrefix("deny:"):
             let m = reply.hasPrefix("deny:") ? String(reply.dropFirst(5)) : ""
-            d = ["behavior": "deny", "message": m.isEmpty ? "Denied from the notch" : m]
+            let dflt = tool == "ExitPlanMode" ? "The user wants to keep planning. Stay in plan mode and revise the plan." : "Denied from the notch"
+            d = ["behavior": "deny", "message": m.isEmpty ? dflt : m]
         case _ where tool == "AskUserQuestion" && reply.hasPrefix("{"):
             guard let a = (try? JSONSerialization.jsonObject(with: Data(reply.utf8))) as? [String: Any], !a.isEmpty else { return nil }
             d = ["behavior": "allow", "updatedInput": rawInput.merging(["answers": a]) { _, new in new }]

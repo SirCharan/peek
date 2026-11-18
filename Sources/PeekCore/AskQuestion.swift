@@ -21,12 +21,14 @@ public struct AskQuestion: Equatable, Sendable {
     public static let multiSelectAsArray = false
 
     /// 1-4 questions with 2-4 options each; nil when the payload is malformed (the terminal then asks).
-    public static func parse(toolInput: [String: Any]) -> AskQuestion? {
-        guard let rawQs = toolInput["questions"] as? [[String: Any]], !rawQs.isEmpty, rawQs.count <= 4 else { return nil }
+    /// `loose` (read-only mirror) accepts up to 8 questions and 12 options each, since nothing is sent back.
+    public static func parse(toolInput: [String: Any], loose: Bool = false) -> AskQuestion? {
+        let maxQ = loose ? 8 : 4, maxO = loose ? 12 : 4, minO = loose ? 1 : 2
+        guard let rawQs = toolInput["questions"] as? [[String: Any]], !rawQs.isEmpty, rawQs.count <= maxQ else { return nil }
         var items: [AskItem] = []
         for raw in rawQs {
             guard let question = raw["question"] as? String, !question.isEmpty,
-                  let rawOpts = raw["options"] as? [[String: Any]], rawOpts.count >= 2, rawOpts.count <= 4 else { return nil }
+                  let rawOpts = raw["options"] as? [[String: Any]], rawOpts.count >= minO, rawOpts.count <= maxO else { return nil }
             var opts: [AskOption] = []
             for opt in rawOpts {
                 guard let label = opt["label"] as? String, !label.isEmpty else { return nil }

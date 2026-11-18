@@ -21,7 +21,19 @@ enum Layout {
     static let diffH: CGFloat = 130
     static let footerH: CGFloat = 18
     static func diffExtra(_ j: Job, _ diff: String?) -> CGFloat { diff == j.id && j.edit?.hunks.isEmpty == false ? diffH : 0 }
-    static func h(_ j: Job, replying: String? = nil) -> CGFloat { j.state == "approval" && j.flash.isEmpty ? (j.perm?.ask.map(askH) ?? (j.perm?.tall == true ? 64 : 52)) : (j.state == "input" && replying == j.id) ? 52 : rowH }
+    /// Plan card: header 22 + scrolling plan text + footer 32. Mirror card: header 22 + body + footer 32.
+    static let planBodyH: CGFloat = 130
+    static let planH: CGFloat = 22 + planBodyH + 32
+    static func mirrorBodyH(_ m: PromptMirror) -> CGFloat {
+        if let a = m.ask { return min(200, a.questions.reduce(CGFloat(0)) { $0 + 20 + 15 * CGFloat($1.options.count) }) }
+        return m.tool == "ExitPlanMode" && !m.plan.isEmpty ? planBodyH : 18
+    }
+    static func mirrorH(_ m: PromptMirror) -> CGFloat { 22 + mirrorBodyH(m) + 32 }
+    static func h(_ j: Job, replying: String? = nil) -> CGFloat {
+        if j.state == "approval", j.flash.isEmpty { return j.perm?.ask.map(askH) ?? (j.perm?.planCard == true ? planH : 52) }
+        if j.state == "input", j.flash.isEmpty, let m = j.mirror { return mirrorH(m) }
+        return j.state == "input" && replying == j.id ? 52 : rowH
+    }
     static func cardH(_ jobs: [Job], _ g: Geo, replying: String? = nil, diff: String? = nil, footer: Bool = false) -> CGFloat {
         let body = jobs.isEmpty ? emptyH : jobs.prefix(maxRows).reduce(0) { $0 + h($1, replying: replying) + diffExtra($1, diff) }
         return g.notchH + body + 10 + (footer ? footerH : 0)
@@ -139,14 +151,16 @@ struct RowView: View {
         }()
         Group {
         if job.state == "approval", job.flash.isEmpty, let a = job.perm?.ask { QuestionCard(job: job, ask: a, store: store, alerting: alerting) }
+        else if job.state == "approval", job.flash.isEmpty, job.perm?.planCard == true { PlanCard(job: job, store: store, alerting: alerting) }
         else if job.state == "approval", job.flash.isEmpty { approval(bar: bar, frac: frac) }
+        else if job.state == "input", job.flash.isEmpty, let m = job.mirror { MirrorCard(job: job, mirror: m, store: store, alerting: alerting) }
         else if job.state == "input", store.replying == job.id { replyRow(bar: bar, frac: frac) }
         else {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
-                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .lineLimit(1).frame(width: 90, alignment: .leading)
+                Text(SessionTitle.short(job.title, 24)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .lineLimit(1).frame(maxWidth: 150, alignment: .leading).fixedSize(horizontal: true, vertical: false)
                 if job.state == "working", job.flash.isEmpty, let e = job.edit { ticker(e) }
                 else {
                     phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
@@ -210,7 +224,7 @@ struct RowView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: false)
-                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(SessionTitle.short(job.title, 22)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 Spacer(minLength: 0)
             }.frame(height: 18)
             HStack(spacing: 8) {
@@ -235,7 +249,7 @@ struct RowView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
-                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(SessionTitle.short(job.title, 22)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 phrase.font(.system(size: 11)).lineLimit(1)
                 Spacer(minLength: 0)
             }.frame(height: 18)
@@ -243,17 +257,91 @@ struct RowView: View {
                 if !denying {
                     Text(p?.detail ?? "")
                         .font(.system(size: 11, design: (p?.mono ?? false) ? .monospaced : .default)).foregroundStyle(.white.opacity(0.85))
-                        .lineLimit(p?.tall == true ? 2 : 1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 ApprovalButtons(job: job, store: store, denying: $denying)
-            }.frame(height: p?.tall == true ? 42 : 30)
+            }.frame(height: 30)
             GeometryReader { g in
                 Capsule().fill(.white.opacity(0.12))
                     .overlay(alignment: .leading) { Capsule().fill(bar).frame(width: g.size.width * frac) }
             }.frame(height: 2)
         }
         .padding(.horizontal, 14)
-        .frame(height: p?.tall == true ? 64 : 52)
+        .frame(height: 52)
+    }
+}
+
+/// ExitPlanMode held request: this request's own plan text (scrolls), Approve or Keep planning. The terminal shows the same dialog.
+struct PlanCard: View {
+    let job: Job
+    let store: Store
+    let alerting: Bool
+    @State private var denying = false
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                StateDot(job: job, alerting: alerting)
+                Text(SessionTitle.short(job.title, 22)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(job.perm?.headline ?? "").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                Spacer(minLength: 0)
+            }.frame(height: 22)
+            ScrollView(.vertical) {
+                Text(job.perm?.plan ?? "").font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }.frame(height: Layout.planBodyH)
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                ApprovalButtons(job: job, store: store, denying: $denying)
+            }.frame(height: 32)
+        }
+        .padding(.horizontal, 14).frame(height: Layout.planH)
+    }
+}
+
+/// Read-only copy of a question or plan the terminal is showing, for when Peek holds no request for it.
+struct MirrorCard: View {
+    let job: Job
+    let mirror: PromptMirror
+    let store: Store
+    let alerting: Bool
+    private var what: String {
+        (mirror.agent.isEmpty ? "" : "(subagent) ") + (mirror.tool == "ExitPlanMode" ? "plan waits for your approval" : "has a question for you")
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                StateDot(job: job, alerting: alerting)
+                Text(SessionTitle.short(job.title, 22)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(what).font(.system(size: 11)).foregroundStyle(amber).lineLimit(1)
+                Spacer(minLength: 0)
+            }.frame(height: 22)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let a = mirror.ask {
+                        ForEach(a.questions.indices, id: \.self) { i in
+                            let q = a.questions[i]
+                            Text(Layout.askTitle(q)).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.85)).lineLimit(1).frame(height: 20, alignment: .bottom)
+                            ForEach(q.options.indices, id: \.self) { k in
+                                Text("\(q.multiSelect ? "\u{25A1}" : "\u{25CB}") \(q.options[k].label)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.6)).lineLimit(1).frame(height: 15, alignment: .leading)
+                            }
+                        }
+                    } else if !mirror.plan.isEmpty {
+                        Text(mirror.plan).font(.system(size: 10, design: .monospaced)).foregroundStyle(.white.opacity(0.85)).textSelection(.enabled)
+                    } else {
+                        Text("Answer it in the terminal.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(height: Layout.mirrorBodyH(mirror))
+            HStack(spacing: 6) {
+                Text("answer in the terminal").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                Spacer(minLength: 0)
+                Button { Focus.jump(job, store: store) } label: {
+                    Text("Go to terminal").font(.system(size: 11, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 10).frame(height: 20).background(Capsule().fill(amber)).contentShape(Capsule())
+                }.buttonStyle(.plain)
+            }.frame(height: 32)
+        }
+        .padding(.horizontal, 14).frame(height: Layout.mirrorH(mirror))
     }
 }
 
@@ -301,7 +389,7 @@ struct QuestionCard: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
-                Text(String(job.title.prefix(14))).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(SessionTitle.short(job.title, 22)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 Text("has a question for you").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
                 Spacer(minLength: 0)
             }.frame(height: 22)

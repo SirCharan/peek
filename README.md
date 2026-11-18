@@ -27,7 +27,9 @@ Peek never delays or replaces the terminal's own prompts: Claude Code asks in th
 - Shows each permission request and multiple-choice question in the notch while the terminal shows it too. You can answer in either place, and the first answer counts.
 - Approves, denies (with a typed reason) or always-allows permission requests from the notch.
 - Answers Claude's multiple-choice questions from the notch.
-- Approves plans from the notch.
+- Approves plans from the notch. The card shows the plan text, which scrolls. **Approve** lets Claude start. **Keep planning** sends it back to revise.
+- Mirrors a question or plan the terminal is showing when Peek holds no request for it. The mirror is read-only and has a **Go to terminal** button. It clears when the prompt is answered.
+- Names each session from the statusline name, else the first real prompt you typed (not subagent, command or pasted-block text), else the folder name. A name never gets worse once found, and is cut at a word boundary.
 - Shows your 5-hour and weekly plan usage in the footer.
 - Offers global hotkeys, custom sounds, a settings window and a choice of display.
 
@@ -76,7 +78,7 @@ All five are global and can be changed or cleared in Settings.
 | Control Option P | Open or close the card |
 | Control Option M | Mute or unmute sounds |
 
-Allow and Deny only answer when it is clear which request you mean. Multiple-choice questions are never answered by hotkey. The terminal's own prompt is always on screen too, so you can answer there instead.
+Allow and Deny only answer when it is clear which request you mean. Multiple-choice questions and plans are never answered by hotkey. The terminal's own prompt is always on screen too, so you can answer there instead.
 
 ## Terminals
 
@@ -96,7 +98,7 @@ Peek has three sounds: `needs`, `done` and `fail`. Put a file with one of those 
 Peek reads only the official Claude Code hooks. `install.sh` registers the `peek-hook` binary for these events:
 
 - Logged without blocking: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`, `SessionEnd`.
-- Held while the terminal asks: `PermissionRequest`. Claude Code also fires it for multiple-choice questions (`AskUserQuestion`), so one hook covers both.
+- Held while the terminal asks: `PermissionRequest`. Claude Code also fires it for multiple-choice questions (`AskUserQuestion`), so one hook covers both. Plan mode too: `PermissionRequest` fires for both with `permission_mode` `plan`, and a late hook answer is honoured. The same prompts are also logged from `PreToolUse`; Peek uses that copy for the read-only mirror.
 
 Non-blocking events are appended to `~/.peek/events/<session>.jsonl`. A `PermissionRequest` goes to the app over the Unix socket `~/.peek/peek.sock`, while Claude Code shows its own prompt in the terminal. If you answer in Peek, the hook returns your answer and Claude Code closes its prompt and carries on. If you answer in the terminal first, Peek sees the session's next event, drops its card and hangs up on the hook, which prints nothing. "Always" reuses the suggestion Claude Code sends with the request, so the rule is saved the way Claude Code would save it.
 
