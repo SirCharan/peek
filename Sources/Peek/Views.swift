@@ -159,8 +159,8 @@ struct RowView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 StateDot(job: job, alerting: alerting)
-                Text(SessionTitle.short(job.title, 24)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .lineLimit(1).frame(maxWidth: 150, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+                Text(SessionTitle.short(job.title, 26)).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .lineLimit(1).frame(maxWidth: 200, alignment: .leading).fixedSize(horizontal: true, vertical: false)
                 if job.state == "working", job.flash.isEmpty, let e = job.edit { ticker(e) }
                 else {
                     phrase.font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
